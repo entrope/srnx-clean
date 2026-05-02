@@ -2,6 +2,7 @@ use std::process::ExitCode;
 
 use srnx::digest::DigestId;
 use srnx::file::SrnxFile;
+use srnx::rinex_header;
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
@@ -9,23 +10,8 @@ fn main() -> ExitCode {
         return usage();
     };
     match first.as_str() {
-        "--dump-chunks" => {
-            let Some(path) = args.next() else {
-                eprintln!("--dump-chunks requires a file argument");
-                return ExitCode::from(2);
-            };
-            if args.next().is_some() {
-                eprintln!("--dump-chunks accepts exactly one file argument");
-                return ExitCode::from(2);
-            }
-            match dump_chunks(&path) {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(e) => {
-                    eprintln!("{path}: {e}");
-                    ExitCode::from(1)
-                }
-            }
-        }
+        "--dump-chunks" => run_single_file_subcommand(&mut args, "--dump-chunks", dump_chunks),
+        "--show-header" => run_single_file_subcommand(&mut args, "--show-header", show_header),
         "-h" | "--help" => {
             print_help();
             ExitCode::SUCCESS
@@ -39,6 +25,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!("usage: srnx-diff --dump-chunks <file.srnx>");
+    eprintln!("       srnx-diff --show-header <file.srnx>");
     eprintln!("       srnx-diff --help");
     ExitCode::from(2)
 }
@@ -48,7 +35,32 @@ fn print_help() {
     println!();
     println!("Subcommands:");
     println!("  --dump-chunks <file.srnx>   Print chunk-level summary of an SRNX file.");
+    println!(
+        "  --show-header <file.srnx>   Decode and print the RINEX header inside an SRNX file."
+    );
     println!("  --help                      Show this help.");
+}
+
+fn run_single_file_subcommand(
+    args: &mut impl Iterator<Item = String>,
+    name: &str,
+    f: fn(&str) -> Result<(), Box<dyn std::error::Error>>,
+) -> ExitCode {
+    let Some(path) = args.next() else {
+        eprintln!("{name} requires a file argument");
+        return ExitCode::from(2);
+    };
+    if args.next().is_some() {
+        eprintln!("{name} accepts exactly one file argument");
+        return ExitCode::from(2);
+    }
+    match f(&path) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("{path}: {e}");
+            ExitCode::from(1)
+        }
+    }
 }
 
 fn dump_chunks(path: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -113,6 +125,93 @@ fn dump_chunks(path: &str) -> Result<(), Box<dyn std::error::Error>> {
         );
     } else {
         println!("SDIR: (not present)");
+    }
+
+    Ok(())
+}
+
+fn show_header(path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let bytes = std::fs::read(path)?;
+    let file = SrnxFile::parse(&bytes)?;
+    let rhdr = file.rhdr_payload().ok_or("SRNX file has no RHDR chunk")?;
+    let header = rinex_header::parse(rhdr)?;
+
+    println!("File: {path}");
+    println!(
+        "RINEX version: {}.{}, file_type={}, sat_system={}",
+        header.version.major,
+        header.version.minor,
+        header.file_type as char,
+        header.sat_system.as_char()
+    );
+    if let Some(s) = header.marker_name.as_deref() {
+        println!("Marker name: {s}");
+    }
+    if let Some(s) = header.marker_number.as_deref() {
+        println!("Marker number: {s}");
+    }
+    if let Some(s) = header.observer.as_deref() {
+        println!("Observer: {s}");
+    }
+    if let Some(s) = header.agency.as_deref() {
+        println!("Agency: {s}");
+    }
+    if let Some(r) = &header.receiver {
+        println!(
+            "Receiver: serial={:?} model={:?} version={:?}",
+            r.serial, r.model, r.version
+        );
+    }
+    if let Some(a) = &header.antenna {
+        println!("Antenna: serial={:?} model={:?}", a.serial, a.model);
+    }
+    if let Some([x, y, z]) = header.approx_position {
+        println!("Approx position XYZ: [{x}, {y}, {z}]");
+    }
+    if let Some([h, e, n]) = header.antenna_delta_hen {
+        println!("Antenna delta H/E/N: [{h}, {e}, {n}]");
+    }
+    if let Some(i) = header.interval {
+        println!("Interval: {i} s");
+    }
+    if let Some(t) = &header.time_of_first_obs {
+        // Render seconds with 7-decimal precision without going through f64.
+        let whole = t.seconds_e7 / 10_000_000;
+        let frac = t.seconds_e7 % 10_000_000;
+        println!(
+            "Time of first obs: {:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:07} {}",
+            t.year, t.month, t.day, t.hour, t.minute, whole, frac, t.time_system
+        );
+    }
+    if let Some(s) = header.leap_seconds {
+        println!("Leap seconds: {s}");
+    }
+
+    println!(
+        "Observation codes ({} total):",
+        header.obs_codes.total_codes()
+    );
+    for (sys, codes) in &header.obs_codes.by_system {
+        let names: Vec<&str> = codes.iter().map(rinex_header::ObsCode::as_str).collect();
+        println!(
+            "  {} ({} codes): {}",
+            sys.as_char(),
+            codes.len(),
+            names.join(" ")
+        );
+    }
+
+    if !header.comments.is_empty() {
+        println!("Comments ({}):", header.comments.len());
+        for c in &header.comments {
+            println!("  {c}");
+        }
+    }
+    if !header.unknown_lines.is_empty() {
+        println!("Unrecognized header labels:");
+        for (k, v) in &header.unknown_lines {
+            println!("  [{k}] {v}");
+        }
     }
 
     Ok(())
