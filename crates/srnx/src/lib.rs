@@ -4,4 +4,7 @@
 
 pub mod chunk;
 pub mod digest;
+pub mod file;
 pub mod leb128;
+pub mod sdir;
+pub mod srnx_header;
