@@ -2,5 +2,6 @@
 //!
 //! See `CLAUDE.md` and `PLAN.md` at the workspace root for scope and roadmap.
 
+pub mod chunk;
 pub mod digest;
 pub mod leb128;
