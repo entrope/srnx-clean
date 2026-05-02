@@ -12,6 +12,7 @@ fn main() -> ExitCode {
     match first.as_str() {
         "--dump-chunks" => run_single_file_subcommand(&mut args, "--dump-chunks", dump_chunks),
         "--show-header" => run_single_file_subcommand(&mut args, "--show-header", show_header),
+        "--show-epochs" => run_single_file_subcommand(&mut args, "--show-epochs", show_epochs),
         "-h" | "--help" => {
             print_help();
             ExitCode::SUCCESS
@@ -212,6 +213,43 @@ fn show_header(path: &str) -> Result<(), Box<dyn std::error::Error>> {
         for (k, v) in &header.unknown_lines {
             println!("  [{k}] {v}");
         }
+    }
+
+    Ok(())
+}
+
+fn show_epochs(path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let bytes = std::fs::read(path)?;
+    let file = SrnxFile::parse(&bytes)?;
+    let epoc = file.epoc()?.ok_or("SRNX file has no EPOC chunk")?;
+
+    println!("File: {path}");
+    println!("Total epochs: {}", epoc.epochs.len());
+    if epoc.epochs.is_empty() {
+        return Ok(());
+    }
+
+    let nonzero_clock = epoc
+        .epochs
+        .iter()
+        .filter(|e| e.clock_offset_e12 != 0)
+        .count();
+    println!("Nonzero receiver clock offsets: {nonzero_clock}");
+
+    let print_one = |label: &str, e: &srnx::epoc::Epoch| {
+        let whole = e.seconds_e7 / 10_000_000;
+        let frac = e.seconds_e7 % 10_000_000;
+        println!(
+            "  {label}: {:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:07}  clock_e12={}",
+            e.year, e.month, e.day, e.hour, e.minute, whole, frac, e.clock_offset_e12
+        );
+    };
+    print_one("first", &epoc.epochs[0]);
+    if epoc.epochs.len() >= 2 {
+        print_one("second", &epoc.epochs[1]);
+    }
+    if epoc.epochs.len() >= 3 {
+        print_one("last  ", epoc.epochs.last().unwrap());
     }
 
     Ok(())

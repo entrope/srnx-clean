@@ -13,6 +13,7 @@ use thiserror::Error;
 
 use crate::chunk::{read_chunk, read_framed, ChunkError};
 use crate::digest::DigestError;
+use crate::epoc::{self, Epoc, EpocError};
 use crate::sdir::{self, Sdir, SdirError};
 use crate::srnx_header::{self, SrnxHeader, SrnxHeaderError};
 
@@ -22,6 +23,8 @@ pub const SRNX_TAG: [u8; 4] = *b"SRNX";
 pub const RHDR_TAG: [u8; 4] = *b"RHDR";
 /// FOURCC tag for the satellite directory chunk.
 pub const SDIR_TAG: [u8; 4] = *b"SDIR";
+/// FOURCC tag for the epoch records chunk.
+pub const EPOC_TAG: [u8; 4] = *b"EPOC";
 
 #[derive(Debug, Error)]
 pub enum FileError {
@@ -31,6 +34,8 @@ pub enum FileError {
     Header(#[from] SrnxHeaderError),
     #[error("SDIR chunk error: {0}")]
     Sdir(#[from] SdirError),
+    #[error("EPOC chunk error: {0}")]
+    Epoc(#[from] EpocError),
     #[error("first chunk is {got:?}, expected SRNX")]
     NotSrnxFile { got: [u8; 4] },
     #[error("file truncated reading {what}")]
@@ -172,6 +177,29 @@ impl<'a> SrnxFile<'a> {
             });
         }
         Ok(Some(sdir::parse(chunk.payload)?))
+    }
+
+    /// Parse the `EPOC` chunk if present. Located via the `SDIR` chunk's
+    /// `epoc_offset`, mirroring the SRNX-spec discovery mechanism. Returns
+    /// `Ok(None)` when there is no SDIR or no epochs.
+    pub fn epoc(&self) -> Result<Option<Epoc>, FileError> {
+        let Some(sdir) = self.sdir()? else {
+            return Ok(None);
+        };
+        if sdir.epoc_offset == 0 {
+            return Ok(None);
+        }
+        let chunk = self
+            .chunk_at_offset(sdir.epoc_offset)
+            .ok_or(FileError::Truncated {
+                what: "EPOC chunk at advertised offset",
+            })?;
+        if chunk.fourcc != EPOC_TAG {
+            return Err(FileError::Truncated {
+                what: "EPOC chunk at advertised offset (FOURCC mismatch)",
+            });
+        }
+        Ok(Some(epoc::parse(chunk.payload)?))
     }
 
     /// Histogram of body-chunk FOURCCs (does not include the SRNX chunk).

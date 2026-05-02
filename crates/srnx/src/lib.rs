@@ -4,6 +4,7 @@
 
 pub mod chunk;
 pub mod digest;
+pub mod epoc;
 pub mod file;
 pub mod leb128;
 pub mod rinex_header;
