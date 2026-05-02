@@ -1,0 +1,32 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/srnx",
+    "crates/srnx-diff",
+]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.93"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/mdpoole/srnx-clean"
+
+[workspace.dependencies]
+srnx = { path = "crates/srnx" }
+blake3 = "1"
+crc32c = "0.6"
+thiserror = "2"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
