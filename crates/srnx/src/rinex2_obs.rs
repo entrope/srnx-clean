@@ -407,8 +407,8 @@ fn parse_obs_field(line: &str, slot: usize) -> Option<Obs> {
     }
 
     let f: f64 = trimmed.parse().ok()?;
-    // Scale = 1000 for RINEX v2 (F14.3 → 3 decimal places).
-    // Multiply by 1000 and round to integer.
+    // Store value as physical × 1000 (integer milliunits) with scale = 1,
+    // matching the SRNX default encoding convention.
     #[allow(clippy::cast_possible_truncation)]
     let value = (f * 1000.0).round() as i64;
 
@@ -417,7 +417,7 @@ fn parse_obs_field(line: &str, slot: usize) -> Option<Obs> {
 
     Some(Obs {
         value,
-        scale: 1000,
+        scale: 1,
         lli,
         ssi,
     })
@@ -460,7 +460,7 @@ mod tests {
         let line = " 128250890.432 5  99935750.10842";
         let obs = parse_obs_field(line, 0).unwrap();
         assert_eq!(obs.value, 128_250_890_432);
-        assert_eq!(obs.scale, 1000);
+        assert_eq!(obs.scale, 1);
         assert_eq!(obs.lli, b' ');
         assert_eq!(obs.ssi, b'5');
 
@@ -576,7 +576,7 @@ mod tests {
         let &(ep_idx, first) = series.first().expect("at least one G13/L1 observation");
         assert_eq!(ep_idx, 0, "G13/L1 observed at epoch 0");
         assert_eq!(first.value, 128_250_890_432);
-        assert_eq!(first.scale, 1000);
+        assert_eq!(first.scale, 1);
         assert_eq!(first.lli, b' ');
         assert_eq!(first.ssi, b'5');
     }

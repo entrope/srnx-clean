@@ -83,8 +83,9 @@ pub struct Socd {
     pub lli: Vec<u8>,
     /// SSI (signal-strength) characters, one per observation (`b' '` = none).
     pub ssi: Vec<u8>,
-    /// Scale factor as `scale × 1000`.  Default is 1000 (i.e. values are
-    /// `observation × 1000`).  Physical value = `value * scale / 1000`.
+    /// Scale factor.  The comparison unit is `value × scale`.
+    /// Default (no explicit scale) is 1; the encoder already multiplies
+    /// physical values by 1000 before delta coding, so `value = physical × 1000`.
     pub scale: u32,
 }
 
@@ -134,15 +135,10 @@ pub fn parse(payload: &[u8]) -> Result<Socd, SocdError> {
 
     let scale = if has_explicit_scale {
         let s_u64 = read_uleb128(&mut obs)?;
-        // Scale is ≤ 1e9 per spec (max 1e6 × 1000); clamp on malformed input.
         let s = u32::try_from(s_u64).unwrap_or(1_000_000_000);
-        if s == 0 {
-            1000
-        } else {
-            s
-        }
+        if s == 0 { 1 } else { s }
     } else {
-        1000 // default: values are observation × 1000
+        1 // default per spec: "If no explicit scale is used, it is the same as 1"
     };
 
     // Initial delta-coder state (delta_order values).
@@ -499,7 +495,7 @@ mod tests {
         let payload = build_socd_sleb(*b"G01\0L1\0\0", &[10, -3, 0, 5]);
         let socd = parse(&payload).unwrap();
         assert_eq!(socd.values, &[10, -3, 0, 5]);
-        assert_eq!(socd.scale, 1000);
+        assert_eq!(socd.scale, 1);
         assert!(socd.lli.iter().all(|&b| b == b' '));
         assert!(socd.ssi.iter().all(|&b| b == b' '));
     }
@@ -695,14 +691,14 @@ mod tests {
             return;
         };
         let socd = parse(&payload).expect("parse must succeed");
-        assert_eq!(socd.scale, 1000);
+        assert_eq!(socd.scale, 1);
         let present: Vec<_> = socd
             .values
             .iter()
             .filter(|&&v| v != ABSENT)
             .copied()
             .collect();
-        // L1 carrier phase in the fixture should be large (>1e11 millicycles).
+        // L1 carrier phase values are physical × 1000 (millicycles); should be large (>1e11).
         let max_abs = present.iter().map(|v| v.unsigned_abs()).max().unwrap_or(0);
         assert!(
             max_abs > 1_000_000,

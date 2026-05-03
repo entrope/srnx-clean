@@ -14,3 +14,4 @@ pub mod sate;
 pub mod sdir;
 pub mod socd;
 pub mod srnx_header;
+pub mod srnx_reader;

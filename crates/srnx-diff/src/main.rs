@@ -1,68 +1,368 @@
+use std::collections::BTreeSet;
 use std::process::ExitCode;
 
 use srnx::digest::DigestId;
+use srnx::epoc;
 use srnx::file::SrnxFile;
-use srnx::rinex_header;
+use srnx::model::{EpochRecord, Obs, ObsFile, SatId};
+use srnx::rinex2_obs;
+use srnx::rinex_header::{self, ObsCode};
+use srnx::srnx_reader;
 
 fn main() -> ExitCode {
-    let mut args = std::env::args().skip(1);
-    let Some(first) = args.next() else {
-        return usage();
-    };
-    match first.as_str() {
-        "--dump-chunks" => run_single_file_subcommand(&mut args, "--dump-chunks", dump_chunks),
-        "--show-header" => run_single_file_subcommand(&mut args, "--show-header", show_header),
-        "--show-epochs" => run_single_file_subcommand(&mut args, "--show-epochs", show_epochs),
-        "-h" | "--help" => {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.as_slice() {
+        [flag] if flag == "--help" || flag == "-h" => {
             print_help();
             ExitCode::SUCCESS
         }
-        _ => {
-            eprintln!("unknown argument: {first}");
-            usage()
+        [flag, path] if flag == "--dump-chunks" => run(dump_chunks(path)),
+        [flag, path] if flag == "--show-header" => run(show_header(path)),
+        [flag, path] if flag == "--show-epochs" => run(show_epochs(path)),
+        [path_a, path_b] if !path_a.starts_with('-') && !path_b.starts_with('-') => {
+            run_diff(path_a, path_b, false)
         }
+        [flag, path_a, path_b]
+            if flag == "--quiet"
+                && !path_a.starts_with('-')
+                && !path_b.starts_with('-') =>
+        {
+            run_diff(path_a, path_b, true)
+        }
+        _ => usage(),
     }
 }
 
 fn usage() -> ExitCode {
-    eprintln!("usage: srnx-diff --dump-chunks <file.srnx>");
-    eprintln!("       srnx-diff --show-header <file.srnx>");
+    eprintln!(
+        "usage: srnx-diff [--quiet] <file-a> <file-b>       compare two files"
+    );
+    eprintln!("       srnx-diff --dump-chunks <file.srnx>          chunk-level summary");
+    eprintln!("       srnx-diff --show-header <file.srnx>          decoded RINEX header");
+    eprintln!("       srnx-diff --show-epochs <file.srnx>          epoch timestamps");
     eprintln!("       srnx-diff --help");
     ExitCode::from(2)
 }
 
 fn print_help() {
-    println!("srnx-diff: SRNX file inspector and (eventually) semantic comparator");
+    println!("srnx-diff: semantic comparator and inspector for SRNX / RINEX v2 observation files");
     println!();
-    println!("Subcommands:");
-    println!("  --dump-chunks <file.srnx>   Print chunk-level summary of an SRNX file.");
-    println!(
-        "  --show-header <file.srnx>   Decode and print the RINEX header inside an SRNX file."
-    );
-    println!("  --help                      Show this help.");
+    println!("USAGE");
+    println!("  srnx-diff [--quiet] <file-a> <file-b>");
+    println!("      Compare two files (any combination of .srnx and RINEX v2 .rnx/.20o/.26o).");
+    println!("      Exits 0 if files are semantically equivalent, 1 if they differ.");
+    println!("      --quiet: suppress diff output (for CI pipelines).");
+    println!();
+    println!("  srnx-diff --dump-chunks <file.srnx>");
+    println!("      Print chunk-level summary of an SRNX file.");
+    println!();
+    println!("  srnx-diff --show-header <file.srnx>");
+    println!("      Decode and print the RINEX header inside an SRNX file.");
+    println!();
+    println!("  srnx-diff --show-epochs <file.srnx>");
+    println!("      Decode epoch timestamps from an SRNX file.");
 }
 
-fn run_single_file_subcommand(
-    args: &mut impl Iterator<Item = String>,
-    name: &str,
-    f: fn(&str) -> Result<(), Box<dyn std::error::Error>>,
-) -> ExitCode {
-    let Some(path) = args.next() else {
-        eprintln!("{name} requires a file argument");
-        return ExitCode::from(2);
-    };
-    if args.next().is_some() {
-        eprintln!("{name} accepts exactly one file argument");
-        return ExitCode::from(2);
-    }
-    match f(&path) {
+fn run(r: Result<(), Box<dyn std::error::Error>>) -> ExitCode {
+    match r {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("{path}: {e}");
+            eprintln!("error: {e}");
             ExitCode::from(1)
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Format detection and loading
+// ---------------------------------------------------------------------------
+
+enum FileFormat {
+    Srnx,
+    Rinex2,
+}
+
+fn detect_format(path: &str, bytes: &[u8]) -> FileFormat {
+    if bytes.starts_with(b"SRNX") {
+        return FileFormat::Srnx;
+    }
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".srnx") {
+        return FileFormat::Srnx;
+    }
+    FileFormat::Rinex2
+}
+
+fn load_obs_file(path: &str) -> Result<ObsFile, Box<dyn std::error::Error>> {
+    let bytes = std::fs::read(path)?;
+    match detect_format(path, &bytes) {
+        FileFormat::Srnx => Ok(srnx_reader::read(&bytes)?),
+        FileFormat::Rinex2 => Ok(rinex2_obs::parse(&bytes)?),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Diff
+// ---------------------------------------------------------------------------
+
+/// Maximum number of individual differences to report before stopping.
+const MAX_DIFFS: usize = 50;
+
+fn run_diff(path_a: &str, path_b: &str, quiet: bool) -> ExitCode {
+    let a = match load_obs_file(path_a) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("{path_a}: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let b = match load_obs_file(path_b) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("{path_b}: {e}");
+            return ExitCode::from(2);
+        }
+    };
+
+    let mut diffs = 0usize;
+    diff_all(&a, &b, path_a, path_b, quiet, &mut diffs);
+
+    if diffs == 0 {
+        if !quiet {
+            println!("Files match.");
+        }
+        ExitCode::SUCCESS
+    } else {
+        if !quiet {
+            if diffs >= MAX_DIFFS {
+                println!("(stopped after {MAX_DIFFS} differences)");
+            }
+            println!("{diffs} difference(s) found.");
+        }
+        ExitCode::from(1)
+    }
+}
+
+fn diff_all(
+    a: &ObsFile,
+    b: &ObsFile,
+    label_a: &str,
+    label_b: &str,
+    quiet: bool,
+    diffs: &mut usize,
+) {
+    diff_epochs(a, b, label_a, label_b, quiet, diffs);
+    diff_observations(a, b, label_a, label_b, quiet, diffs);
+}
+
+// -- Epoch comparison --------------------------------------------------------
+
+fn diff_epochs(
+    a: &ObsFile,
+    b: &ObsFile,
+    label_a: &str,
+    label_b: &str,
+    quiet: bool,
+    diffs: &mut usize,
+) {
+    let na = a.epochs.len();
+    let nb = b.epochs.len();
+    if na != nb {
+        bump(diffs, quiet, || {
+            format!("epoch count: {label_a}={na}  {label_b}={nb}")
+        });
+    }
+
+    let common = na.min(nb);
+    for i in 0..common {
+        if *diffs >= MAX_DIFFS {
+            break;
+        }
+        let ea = &a.epochs[i];
+        let eb = &b.epochs[i];
+        if !epochs_eq(ea, eb) {
+            bump(diffs, quiet, || {
+                format!(
+                    "epoch[{i}] timestamp: {} vs {}",
+                    fmt_epoch(ea),
+                    fmt_epoch(eb)
+                )
+            });
+        } else if ea.clock_offset_e12 != eb.clock_offset_e12 {
+            bump(diffs, quiet, || {
+                format!(
+                    "epoch[{i}] clock offset: {} vs {} (×10⁻¹²)",
+                    ea.clock_offset_e12, eb.clock_offset_e12
+                )
+            });
+        }
+    }
+}
+
+fn epochs_eq(a: &EpochRecord, b: &EpochRecord) -> bool {
+    a.year == b.year
+        && a.month == b.month
+        && a.day == b.day
+        && a.hour == b.hour
+        && a.minute == b.minute
+        && a.seconds_e7 == b.seconds_e7
+}
+
+fn fmt_epoch(e: &EpochRecord) -> String {
+    let whole = e.seconds_e7 / 10_000_000;
+    let frac = e.seconds_e7 % 10_000_000;
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:07}",
+        e.year, e.month, e.day, e.hour, e.minute, whole, frac
+    )
+}
+
+// -- Observation comparison --------------------------------------------------
+
+fn diff_observations(
+    a: &ObsFile,
+    b: &ObsFile,
+    label_a: &str,
+    label_b: &str,
+    quiet: bool,
+    diffs: &mut usize,
+) {
+    let keys_a: BTreeSet<_> = a.observations.keys().collect();
+    let keys_b: BTreeSet<_> = b.observations.keys().collect();
+
+    for key in keys_a.union(&keys_b) {
+        if *diffs >= MAX_DIFFS {
+            break;
+        }
+        match (a.observations.get(key), b.observations.get(key)) {
+            (None, _) => bump(diffs, quiet, || {
+                format!(
+                    "{}/{}: only in {label_b}",
+                    key.0,
+                    key.1.as_str()
+                )
+            }),
+            (_, None) => bump(diffs, quiet, || {
+                format!(
+                    "{}/{}: only in {label_a}",
+                    key.0,
+                    key.1.as_str()
+                )
+            }),
+            (Some(sa), Some(sb)) => {
+                diff_series(key, sa, sb, a, b, label_a, label_b, quiet, diffs);
+            }
+        }
+    }
+}
+
+fn diff_series(
+    key: &(SatId, ObsCode),
+    sa: &[(usize, Obs)],
+    sb: &[(usize, Obs)],
+    file_a: &ObsFile,
+    file_b: &ObsFile,
+    label_a: &str,
+    label_b: &str,
+    quiet: bool,
+    diffs: &mut usize,
+) {
+    let prefix = format!("{}/{}", key.0, key.1.as_str());
+    let mut ia = 0;
+    let mut ib = 0;
+
+    while ia < sa.len() && ib < sb.len() && *diffs < MAX_DIFFS {
+        let (ea, oa) = sa[ia];
+        let (eb, ob) = sb[ib];
+
+        if ea < eb {
+            bump(diffs, quiet, || {
+                format!(
+                    "{prefix} epoch[{ea}] {}: only in {label_a}",
+                    fmt_epoch(&file_a.epochs[ea])
+                )
+            });
+            ia += 1;
+        } else if eb < ea {
+            bump(diffs, quiet, || {
+                format!(
+                    "{prefix} epoch[{eb}] {}: only in {label_b}",
+                    fmt_epoch(&file_b.epochs[eb])
+                )
+            });
+            ib += 1;
+        } else {
+            if !obs_eq(oa, ob) {
+                let ea_copy = ea;
+                bump(diffs, quiet, || {
+                    format!(
+                        "{prefix} epoch[{ea_copy}] {}: value mismatch: {}  {}",
+                        fmt_epoch(&file_a.epochs[ea_copy]),
+                        fmt_obs_detail(oa, label_a),
+                        fmt_obs_detail(ob, label_b),
+                    )
+                });
+            }
+            ia += 1;
+            ib += 1;
+        }
+    }
+
+    while ia < sa.len() && *diffs < MAX_DIFFS {
+        let (ea, _) = sa[ia];
+        bump(diffs, quiet, || {
+            format!(
+                "{prefix} epoch[{ea}] {}: only in {label_a}",
+                fmt_epoch(&file_a.epochs[ea])
+            )
+        });
+        ia += 1;
+    }
+    while ib < sb.len() && *diffs < MAX_DIFFS {
+        let (eb, _) = sb[ib];
+        bump(diffs, quiet, || {
+            format!(
+                "{prefix} epoch[{eb}] {}: only in {label_b}",
+                fmt_epoch(&file_b.epochs[eb])
+            )
+        });
+        ib += 1;
+    }
+}
+
+fn obs_eq(a: Obs, b: Obs) -> bool {
+    let phys_a = (a.value as i128) * (a.scale as i128);
+    let phys_b = (b.value as i128) * (b.scale as i128);
+    phys_a == phys_b
+        && norm_indicator(a.lli) == norm_indicator(b.lli)
+        && norm_indicator(a.ssi) == norm_indicator(b.ssi)
+}
+
+/// Treat `b'0'` and `b' '` as equivalent (both mean "no information").
+#[inline]
+fn norm_indicator(b: u8) -> u8 {
+    if b == b'0' { b' ' } else { b }
+}
+
+fn fmt_obs_detail(obs: Obs, label: &str) -> String {
+    // Show the comparison unit (val × scale) as the display value.
+    // physical_milli = val * scale  (same across files for equal observations)
+    let pm = (obs.value as i128) * (obs.scale as i128);
+    let lli = norm_indicator(obs.lli) as char;
+    let ssi = norm_indicator(obs.ssi) as char;
+    format!("{label}(phys={pm}, lli='{lli}', ssi='{ssi}')")
+}
+
+fn bump(diffs: &mut usize, quiet: bool, msg: impl FnOnce() -> String) {
+    *diffs += 1;
+    if !quiet && *diffs <= MAX_DIFFS {
+        println!("{}", msg());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Existing single-file subcommands (dump-chunks, show-header, show-epochs)
+// ---------------------------------------------------------------------------
 
 fn dump_chunks(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let bytes = std::fs::read(path)?;
@@ -82,19 +382,11 @@ fn dump_chunks(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     );
     println!(
         "  SRNX-chunk digest: {}",
-        if file.srnx_digest_ok {
-            "ok"
-        } else {
-            "MISMATCH"
-        }
+        if file.srnx_digest_ok { "ok" } else { "MISMATCH" }
     );
     println!(
         "  file-level digest: {}",
-        if file.file_digest_ok {
-            "ok"
-        } else {
-            "MISMATCH"
-        }
+        if file.file_digest_ok { "ok" } else { "MISMATCH" }
     );
 
     let counts = file.count_by_fourcc();
@@ -109,11 +401,7 @@ fn dump_chunks(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     if !bad.is_empty() {
         println!("Per-chunk digest mismatches:");
         for c in bad {
-            println!(
-                "  {} at file_offset={}",
-                fourcc_str(c.fourcc),
-                c.file_offset
-            );
+            println!("  {} at file_offset={}", fourcc_str(c.fourcc), c.file_offset);
         }
     }
 
@@ -176,7 +464,6 @@ fn show_header(path: &str) -> Result<(), Box<dyn std::error::Error>> {
         println!("Interval: {i} s");
     }
     if let Some(t) = &header.time_of_first_obs {
-        // Render seconds with 7-decimal precision without going through f64.
         let whole = t.seconds_e7 / 10_000_000;
         let frac = t.seconds_e7 % 10_000_000;
         println!(
@@ -187,7 +474,6 @@ fn show_header(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(s) = header.leap_seconds {
         println!("Leap seconds: {s}");
     }
-
     println!(
         "Observation codes ({} total):",
         header.obs_codes.total_codes()
@@ -201,7 +487,6 @@ fn show_header(path: &str) -> Result<(), Box<dyn std::error::Error>> {
             names.join(" ")
         );
     }
-
     if !header.comments.is_empty() {
         println!("Comments ({}):", header.comments.len());
         for c in &header.comments {
@@ -214,7 +499,6 @@ fn show_header(path: &str) -> Result<(), Box<dyn std::error::Error>> {
             println!("  [{k}] {v}");
         }
     }
-
     Ok(())
 }
 
@@ -236,7 +520,7 @@ fn show_epochs(path: &str) -> Result<(), Box<dyn std::error::Error>> {
         .count();
     println!("Nonzero receiver clock offsets: {nonzero_clock}");
 
-    let print_one = |label: &str, e: &srnx::epoc::Epoch| {
+    let print_one = |label: &str, e: &epoc::Epoch| {
         let whole = e.seconds_e7 / 10_000_000;
         let frac = e.seconds_e7 % 10_000_000;
         println!(
@@ -255,6 +539,10 @@ fn show_epochs(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
 fn digest_id_label(id: DigestId) -> &'static str {
     match id {
         DigestId::Null => "null",
@@ -264,8 +552,6 @@ fn digest_id_label(id: DigestId) -> &'static str {
     }
 }
 
-/// Render a FOURCC tag as a human-readable string. Non-ASCII bytes are
-/// shown in `\xNN` form so the output stays printable on any input.
 fn fourcc_str(tag: [u8; 4]) -> String {
     use std::fmt::Write;
     let mut out = String::with_capacity(4);
@@ -273,7 +559,6 @@ fn fourcc_str(tag: [u8; 4]) -> String {
         if b.is_ascii_graphic() {
             out.push(b as char);
         } else {
-            // write! into a String is infallible.
             let _ = write!(out, "\\x{b:02X}");
         }
     }
