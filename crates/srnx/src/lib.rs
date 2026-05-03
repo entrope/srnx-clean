@@ -7,6 +7,8 @@ pub mod digest;
 pub mod epoc;
 pub mod file;
 pub mod leb128;
+pub mod model;
+pub mod rinex2_obs;
 pub mod rinex_header;
 pub mod sate;
 pub mod sdir;
