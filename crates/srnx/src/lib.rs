@@ -8,5 +8,7 @@ pub mod epoc;
 pub mod file;
 pub mod leb128;
 pub mod rinex_header;
+pub mod sate;
 pub mod sdir;
+pub mod socd;
 pub mod srnx_header;

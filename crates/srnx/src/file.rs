@@ -14,7 +14,9 @@ use thiserror::Error;
 use crate::chunk::{read_chunk, read_framed, ChunkError};
 use crate::digest::DigestError;
 use crate::epoc::{self, Epoc, EpocError};
+use crate::sate::{self, Sate, SateError};
 use crate::sdir::{self, Sdir, SdirError};
+use crate::socd::{self, Socd, SocdError};
 use crate::srnx_header::{self, SrnxHeader, SrnxHeaderError};
 
 /// FOURCC tag for the SRNX header chunk.
@@ -25,6 +27,10 @@ pub const RHDR_TAG: [u8; 4] = *b"RHDR";
 pub const SDIR_TAG: [u8; 4] = *b"SDIR";
 /// FOURCC tag for the epoch records chunk.
 pub const EPOC_TAG: [u8; 4] = *b"EPOC";
+/// FOURCC tag for the satellite observations metadata chunk.
+pub const SATE_TAG: [u8; 4] = *b"SATE";
+/// FOURCC tag for the satellite observation code data chunk.
+pub const SOCD_TAG: [u8; 4] = *b"SOCD";
 
 #[derive(Debug, Error)]
 pub enum FileError {
@@ -36,6 +42,10 @@ pub enum FileError {
     Sdir(#[from] SdirError),
     #[error("EPOC chunk error: {0}")]
     Epoc(#[from] EpocError),
+    #[error("SATE chunk error: {0}")]
+    Sate(#[from] SateError),
+    #[error("SOCD chunk error: {0}")]
+    Socd(#[from] SocdError),
     #[error("first chunk is {got:?}, expected SRNX")]
     NotSrnxFile { got: [u8; 4] },
     #[error("file truncated reading {what}")]
@@ -200,6 +210,40 @@ impl<'a> SrnxFile<'a> {
             });
         }
         Ok(Some(epoc::parse(chunk.payload)?))
+    }
+
+    /// Parse a `SATE` chunk at the given absolute file offset.
+    ///
+    /// `num_obs_codes` must match the number of observation codes declared in
+    /// the `RHDR` header; `total_epochs` is the count from the `EPOC` chunk.
+    pub fn sate_at(
+        &self,
+        offset: u64,
+        num_obs_codes: usize,
+        total_epochs: usize,
+    ) -> Result<Sate, FileError> {
+        let chunk = self.chunk_at_offset(offset).ok_or(FileError::Truncated {
+            what: "SATE chunk at given offset",
+        })?;
+        if chunk.fourcc != SATE_TAG {
+            return Err(FileError::Truncated {
+                what: "SATE chunk at given offset (FOURCC mismatch)",
+            });
+        }
+        Ok(sate::parse(chunk.payload, num_obs_codes, total_epochs)?)
+    }
+
+    /// Parse a `SOCD` chunk at the given absolute file offset.
+    pub fn socd_at(&self, offset: u64) -> Result<Socd, FileError> {
+        let chunk = self.chunk_at_offset(offset).ok_or(FileError::Truncated {
+            what: "SOCD chunk at given offset",
+        })?;
+        if chunk.fourcc != SOCD_TAG {
+            return Err(FileError::Truncated {
+                what: "SOCD chunk at given offset (FOURCC mismatch)",
+            });
+        }
+        Ok(socd::parse(chunk.payload)?)
     }
 
     /// Histogram of body-chunk FOURCCs (does not include the SRNX chunk).
