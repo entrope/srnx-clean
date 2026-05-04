@@ -46,7 +46,7 @@ pub fn read(bytes: &[u8]) -> Result<ObsFile, SrnxReadError> {
     let mut observations: BTreeMap<(SatId, ObsCode), Vec<(usize, Obs)>> = BTreeMap::new();
 
     for entry in &sdir.satellites {
-        let sat_id = parse_sat_id(&entry.sat_id);
+        let sat_id = parse_sat_id(entry.sat_id);
         let sate_file_offset = entry.sate_offset;
 
         // Choose obs-code list for this satellite's system.
@@ -62,18 +62,19 @@ pub fn read(bytes: &[u8]) -> Result<ObsFile, SrnxReadError> {
             }
 
             // SOCD offset is relative to the start of the SATE chunk's FOURCC.
-            let socd_abs = sate_file_offset
-                .checked_add_signed(rel_offset)
-                .ok_or(FileError::Truncated {
-                    what: "SOCD offset out of range",
-                })?;
+            let socd_abs =
+                sate_file_offset
+                    .checked_add_signed(rel_offset)
+                    .ok_or(FileError::Truncated {
+                        what: "SOCD offset out of range",
+                    })?;
 
             let socd = file.socd_at(socd_abs)?;
             let obs_code = obs_codes[code_idx];
 
             let series = observations.entry((sat_id, obs_code)).or_default();
             let n = present.len().min(socd.values.len());
-            for i in 0..n {
+            for (i, &ep_idx) in present.iter().enumerate().take(n) {
                 let val = socd.values[i];
                 if val == ABSENT {
                     continue;
@@ -81,7 +82,7 @@ pub fn read(bytes: &[u8]) -> Result<ObsFile, SrnxReadError> {
                 let lli = socd.lli.get(i).copied().unwrap_or(b' ');
                 let ssi = socd.ssi.get(i).copied().unwrap_or(b' ');
                 series.push((
-                    present[i],
+                    ep_idx,
                     Obs {
                         value: val,
                         scale: socd.scale,
@@ -118,7 +119,7 @@ fn epoch_to_record(e: &Epoch) -> EpochRecord {
 ///
 /// Format: `[system_char, prn_tens, prn_ones]`, e.g. `b"G13"` → GPS PRN 13.
 /// A space in the system byte is treated as GPS (RINEX v2 convention).
-fn parse_sat_id(bytes: &[u8; 3]) -> SatId {
+fn parse_sat_id(bytes: [u8; 3]) -> SatId {
     let system = if bytes[0] == b' ' {
         SatSystem::GPS
     } else {
@@ -141,7 +142,7 @@ fn parse_sat_id(bytes: &[u8; 3]) -> SatId {
 ///
 /// For v2 MIXED files, all satellites share the single MIXED list.
 /// For v3 files, each satellite system has its own list.
-fn obs_codes_for_sat<'a>(header: &'a Header, system: SatSystem) -> &'a [ObsCode] {
+fn obs_codes_for_sat(header: &Header, system: SatSystem) -> &[ObsCode] {
     if let Some(codes) = header.obs_codes.for_system(SatSystem::MIXED) {
         return codes;
     }
@@ -178,21 +179,21 @@ mod tests {
 
     #[test]
     fn parse_sat_id_gps() {
-        let id = parse_sat_id(b"G13");
+        let id = parse_sat_id(*b"G13");
         assert_eq!(id.system, SatSystem::GPS);
         assert_eq!(id.prn, 13);
     }
 
     #[test]
     fn parse_sat_id_glonass() {
-        let id = parse_sat_id(b"R10");
+        let id = parse_sat_id(*b"R10");
         assert_eq!(id.system, SatSystem::GLONASS);
         assert_eq!(id.prn, 10);
     }
 
     #[test]
     fn parse_sat_id_single_digit() {
-        let id = parse_sat_id(b"E01");
+        let id = parse_sat_id(*b"E01");
         assert_eq!(id.system, SatSystem::GALILEO);
         assert_eq!(id.prn, 1);
     }
@@ -230,7 +231,7 @@ mod tests {
         let &(ep_idx, first) = series.first().expect("at least one G13/L1 observation");
         assert_eq!(ep_idx, 0);
         // Comparison unit: value × scale must equal RINEX v2 value × 1 (both scale=1).
-        let phys_srnx = (first.value as i128) * (first.scale as i128);
+        let phys_srnx = i128::from(first.value) * i128::from(first.scale);
         let phys_v2 = 128_250_890_432_i128;
         assert_eq!(phys_srnx, phys_v2, "G13/L1 physical value at epoch 0");
     }
@@ -257,4 +258,3 @@ mod tests {
         }
     }
 }
-

@@ -45,6 +45,8 @@
 //! - `0xFF`: SLEB128 run — ULEB128 (count-1) followed by that many SLEB128
 //!   deltas fed through the integrator.
 
+use std::collections::BTreeMap;
+
 use thiserror::Error;
 
 use crate::leb128::{read_sleb128, read_uleb128, LebError};
@@ -87,6 +89,11 @@ pub struct Socd {
     /// Default (no explicit scale) is 1; the encoder already multiplies
     /// physical values by 1000 before delta coding, so `value = physical × 1000`.
     pub scale: u32,
+    /// Delta order extracted from the schema byte (0–7).
+    pub delta_order: u8,
+    /// Counts of each block-header byte seen while decoding this SOCD.
+    /// Keys 0x00–0x9F are bit-matrix headers; 0xFD/0xFE/0xFF are run headers.
+    pub block_header_counts: BTreeMap<u8, usize>,
 }
 
 /// Parse a `SOCD` chunk payload.
@@ -136,7 +143,11 @@ pub fn parse(payload: &[u8]) -> Result<Socd, SocdError> {
     let scale = if has_explicit_scale {
         let s_u64 = read_uleb128(&mut obs)?;
         let s = u32::try_from(s_u64).unwrap_or(1_000_000_000);
-        if s == 0 { 1 } else { s }
+        if s == 0 {
+            1
+        } else {
+            s
+        }
     } else {
         1 // default per spec: "If no explicit scale is used, it is the same as 1"
     };
@@ -152,9 +163,11 @@ pub fn parse(payload: &[u8]) -> Result<Socd, SocdError> {
 
     // Decode blocks.
     let mut values: Vec<i64> = Vec::with_capacity(count);
+    let mut block_header_counts: BTreeMap<u8, usize> = BTreeMap::new();
     while !obs.is_empty() {
         let header = obs[0];
         obs = &obs[1..];
+        *block_header_counts.entry(header).or_default() += 1;
 
         match header {
             0x00..=0x9F => {
@@ -218,6 +231,8 @@ pub fn parse(payload: &[u8]) -> Result<Socd, SocdError> {
         lli,
         ssi,
         scale,
+        delta_order,
+        block_header_counts,
     })
 }
 

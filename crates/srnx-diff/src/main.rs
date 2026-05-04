@@ -23,9 +23,7 @@ fn main() -> ExitCode {
             run_diff(path_a, path_b, false)
         }
         [flag, path_a, path_b]
-            if flag == "--quiet"
-                && !path_a.starts_with('-')
-                && !path_b.starts_with('-') =>
+            if flag == "--quiet" && !path_a.starts_with('-') && !path_b.starts_with('-') =>
         {
             run_diff(path_a, path_b, true)
         }
@@ -34,9 +32,7 @@ fn main() -> ExitCode {
 }
 
 fn usage() -> ExitCode {
-    eprintln!(
-        "usage: srnx-diff [--quiet] <file-a> <file-b>       compare two files"
-    );
+    eprintln!("usage: srnx-diff [--quiet] <file-a> <file-b>       compare two files");
     eprintln!("       srnx-diff --dump-chunks <file.srnx>          chunk-level summary");
     eprintln!("       srnx-diff --show-header <file.srnx>          decoded RINEX header");
     eprintln!("       srnx-diff --show-epochs <file.srnx>          epoch timestamps");
@@ -86,8 +82,10 @@ fn detect_format(path: &str, bytes: &[u8]) -> FileFormat {
     if bytes.starts_with(b"SRNX") {
         return FileFormat::Srnx;
     }
-    let lower = path.to_ascii_lowercase();
-    if lower.ends_with(".srnx") {
+    if std::path::Path::new(path)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("srnx"))
+    {
         return FileFormat::Srnx;
     }
     FileFormat::Rinex2
@@ -236,28 +234,21 @@ fn diff_observations(
         }
         match (a.observations.get(key), b.observations.get(key)) {
             (None, _) => bump(diffs, quiet, || {
-                format!(
-                    "{}/{}: only in {label_b}",
-                    key.0,
-                    key.1.as_str()
-                )
+                format!("{}/{}: only in {label_b}", key.0, key.1.as_str())
             }),
             (_, None) => bump(diffs, quiet, || {
-                format!(
-                    "{}/{}: only in {label_a}",
-                    key.0,
-                    key.1.as_str()
-                )
+                format!("{}/{}: only in {label_a}", key.0, key.1.as_str())
             }),
             (Some(sa), Some(sb)) => {
-                diff_series(key, sa, sb, a, b, label_a, label_b, quiet, diffs);
+                diff_series(**key, sa, sb, a, b, label_a, label_b, quiet, diffs);
             }
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn diff_series(
-    key: &(SatId, ObsCode),
+    key: (SatId, ObsCode),
     sa: &[(usize, Obs)],
     sb: &[(usize, Obs)],
     file_a: &ObsFile,
@@ -275,36 +266,39 @@ fn diff_series(
         let (ea, oa) = sa[ia];
         let (eb, ob) = sb[ib];
 
-        if ea < eb {
-            bump(diffs, quiet, || {
-                format!(
-                    "{prefix} epoch[{ea}] {}: only in {label_a}",
-                    fmt_epoch(&file_a.epochs[ea])
-                )
-            });
-            ia += 1;
-        } else if eb < ea {
-            bump(diffs, quiet, || {
-                format!(
-                    "{prefix} epoch[{eb}] {}: only in {label_b}",
-                    fmt_epoch(&file_b.epochs[eb])
-                )
-            });
-            ib += 1;
-        } else {
-            if !obs_eq(oa, ob) {
-                let ea_copy = ea;
+        match ea.cmp(&eb) {
+            std::cmp::Ordering::Less => {
                 bump(diffs, quiet, || {
                     format!(
-                        "{prefix} epoch[{ea_copy}] {}: value mismatch: {}  {}",
-                        fmt_epoch(&file_a.epochs[ea_copy]),
-                        fmt_obs_detail(oa, label_a),
-                        fmt_obs_detail(ob, label_b),
+                        "{prefix} epoch[{ea}] {}: only in {label_a}",
+                        fmt_epoch(&file_a.epochs[ea])
                     )
                 });
+                ia += 1;
             }
-            ia += 1;
-            ib += 1;
+            std::cmp::Ordering::Greater => {
+                bump(diffs, quiet, || {
+                    format!(
+                        "{prefix} epoch[{eb}] {}: only in {label_b}",
+                        fmt_epoch(&file_b.epochs[eb])
+                    )
+                });
+                ib += 1;
+            }
+            std::cmp::Ordering::Equal => {
+                if !obs_eq(oa, ob) {
+                    bump(diffs, quiet, || {
+                        format!(
+                            "{prefix} epoch[{ea}] {}: value mismatch: {}  {}",
+                            fmt_epoch(&file_a.epochs[ea]),
+                            fmt_obs_detail(oa, label_a),
+                            fmt_obs_detail(ob, label_b),
+                        )
+                    });
+                }
+                ia += 1;
+                ib += 1;
+            }
         }
     }
 
@@ -331,8 +325,8 @@ fn diff_series(
 }
 
 fn obs_eq(a: Obs, b: Obs) -> bool {
-    let phys_a = (a.value as i128) * (a.scale as i128);
-    let phys_b = (b.value as i128) * (b.scale as i128);
+    let phys_a = i128::from(a.value) * i128::from(a.scale);
+    let phys_b = i128::from(b.value) * i128::from(b.scale);
     phys_a == phys_b
         && norm_indicator(a.lli) == norm_indicator(b.lli)
         && norm_indicator(a.ssi) == norm_indicator(b.ssi)
@@ -341,13 +335,15 @@ fn obs_eq(a: Obs, b: Obs) -> bool {
 /// Treat `b'0'` and `b' '` as equivalent (both mean "no information").
 #[inline]
 fn norm_indicator(b: u8) -> u8 {
-    if b == b'0' { b' ' } else { b }
+    if b == b'0' {
+        b' '
+    } else {
+        b
+    }
 }
 
 fn fmt_obs_detail(obs: Obs, label: &str) -> String {
-    // Show the comparison unit (val × scale) as the display value.
-    // physical_milli = val * scale  (same across files for equal observations)
-    let pm = (obs.value as i128) * (obs.scale as i128);
+    let pm = i128::from(obs.value) * i128::from(obs.scale);
     let lli = norm_indicator(obs.lli) as char;
     let ssi = norm_indicator(obs.ssi) as char;
     format!("{label}(phys={pm}, lli='{lli}', ssi='{ssi}')")
@@ -382,11 +378,19 @@ fn dump_chunks(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     );
     println!(
         "  SRNX-chunk digest: {}",
-        if file.srnx_digest_ok { "ok" } else { "MISMATCH" }
+        if file.srnx_digest_ok {
+            "ok"
+        } else {
+            "MISMATCH"
+        }
     );
     println!(
         "  file-level digest: {}",
-        if file.file_digest_ok { "ok" } else { "MISMATCH" }
+        if file.file_digest_ok {
+            "ok"
+        } else {
+            "MISMATCH"
+        }
     );
 
     let counts = file.count_by_fourcc();
@@ -401,7 +405,11 @@ fn dump_chunks(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     if !bad.is_empty() {
         println!("Per-chunk digest mismatches:");
         for c in bad {
-            println!("  {} at file_offset={}", fourcc_str(c.fourcc), c.file_offset);
+            println!(
+                "  {} at file_offset={}",
+                fourcc_str(c.fourcc),
+                c.file_offset
+            );
         }
     }
 
