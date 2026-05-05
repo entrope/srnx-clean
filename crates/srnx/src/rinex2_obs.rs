@@ -394,23 +394,36 @@ fn collect_sats(line: &str, sats: &mut Vec<SatId>) {
 ///
 /// Each slot is 16 bytes: 14-byte F14.3 value + 1-byte LLI + 1-byte SSI.
 /// Returns `None` if the value field is entirely blank (absent observation).
+///
+/// F14.3 values have exactly 3 decimal places.  We parse them directly as
+/// integers by skipping the decimal point — no `String` allocation and no
+/// `f64` round-trip.
 fn parse_obs_field(line: &str, slot: usize) -> Option<Obs> {
     let start = slot * 16;
-    // Collect the 14-char value field.
-    let val_str: String = (start..start + 14)
-        .map(|i| byte_at(line, i) as char)
-        .collect();
 
-    let trimmed = val_str.trim();
-    if trimmed.is_empty() {
+    // Parse the 14-byte F14.3 value field as an integer (×1000 milliunits).
+    let mut acc: i64 = 0;
+    let mut negative = false;
+    let mut any_digit = false;
+
+    for i in 0..14 {
+        let b = byte_at(line, start + i);
+        match b {
+            b'-' => negative = true,
+            b'0'..=b'9' => {
+                acc = acc * 10 + i64::from(b - b'0');
+                any_digit = true;
+            }
+            b'.' | b' ' | b'+' => {}
+            _ => return None, // unexpected character → treat as absent
+        }
+    }
+
+    if !any_digit {
         return None;
     }
 
-    let f: f64 = trimmed.parse().ok()?;
-    // Store value as physical × 1000 (integer milliunits) with scale = 1,
-    // matching the SRNX default encoding convention.
-    #[allow(clippy::cast_possible_truncation)]
-    let value = (f * 1000.0).round() as i64;
+    let value = if negative { -acc } else { acc };
 
     let lli = byte_at(line, start + 14);
     let ssi = byte_at(line, start + 15);
