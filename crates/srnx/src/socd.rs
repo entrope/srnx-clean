@@ -85,9 +85,15 @@ pub struct Socd {
     pub lli: Vec<u8>,
     /// SSI (signal-strength) characters, one per observation (`b' '` = none).
     pub ssi: Vec<u8>,
-    /// Scale factor.  The comparison unit is `value × scale`.
-    /// Default (no explicit scale) is 1; the encoder already multiplies
-    /// physical values by 1000 before delta coding, so `value = physical × 1000`.
+    /// Scale factor × 1000, matching the SRNX schema encoding.
+    ///
+    /// Invariant: `physical_value × 1000 = value × scale` (the comparison key
+    /// used by the diff tool).  Equivalently, `physical_value = value × scale / 1000`.
+    ///
+    /// When the schema has no explicit scale, the on-disk default is
+    /// `scale_times_1000 = 1000` (i.e. identity).  We store that as `1` so the
+    /// invariant holds: the encoded value is already in milliunits and
+    /// `value × 1 = physical × 1000`.
     pub scale: u32,
     /// Delta order extracted from the schema byte (0–7).
     pub delta_order: u8,

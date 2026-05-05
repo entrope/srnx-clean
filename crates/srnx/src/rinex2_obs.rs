@@ -672,3 +672,37 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod uvfm_debug {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn try_load(name: &str) -> Option<ObsFile> {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..").join("..").join("rnx-data").join(name);
+        let bytes = std::fs::read(&path).ok()?;
+        parse(&bytes).ok()
+    }
+
+    #[test]
+    fn debug_uvfm_satellites() {
+        let obs = try_load("uvfm1210.26o").expect("should parse");
+        let sats: BTreeSet<_> = obs.observations.keys().map(|(s, _)| *s).collect();
+        eprintln!("RINEX satellites ({}):", sats.len());
+        for s in &sats {
+            eprintln!("  {} (prn={})", s, s.prn);
+        }
+        let g00 = SatId::new(SatSystem::GPS, 0);
+        if sats.contains(&g00) {
+            eprintln!("G00 found!");
+            for ((s, c), series) in &obs.observations {
+                if *s == g00 {
+                    eprintln!("G00/{}: {} obs, first epoch={}", 
+                        c.as_str(), series.len(), 
+                        series.first().map_or(999, |(i,_)| *i));
+                }
+            }
+        }
+    }
+}

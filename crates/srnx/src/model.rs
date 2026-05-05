@@ -45,15 +45,6 @@ pub struct Obs {
     pub ssi: u8,
 }
 
-impl Obs {
-    /// Physical value as a rational: `(value, scale_divisor)` with
-    /// `scale_divisor = scale / 1000`.  For scale=1000: value / 1.
-    #[must_use]
-    pub fn physical_times_1000(&self) -> i64 {
-        self.value.wrapping_mul(i64::from(self.scale))
-    }
-}
-
 /// Calendar epoch metadata from an observation epoch header line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EpochRecord {

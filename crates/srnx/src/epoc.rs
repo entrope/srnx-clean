@@ -23,11 +23,13 @@
 //!
 //! ## Time advancement
 //!
-//! Within a span, each successive epoch is at `prev + interval`. The spec's
-//! quirk: when the new sum is **exactly 60 seconds**, minutes and seconds
-//! reset; otherwise sub-second values past 60 (during a leap second) are
-//! preserved. Hours never wrap. Encoders MUST split spans at day boundaries
-//! and at leap seconds, so within a single span hours stay in `0..=23`.
+//! Within a span, each successive epoch is at `prev + interval`. When the
+//! resulting seconds value is **at least 60**, the excess carries into the
+//! next higher unit (minutes, then hours).  The sole exception is the
+//! leap-second range `23:59:60.0` through `23:59:60.9999999`, which is
+//! preserved as-is.  A timestamp `>= 23:59:61` is illegal per the spec.
+//! Encoders MUST start a new span at each day boundary (the first epoch of
+//! each day), so within a single span hours stay in `0..=23`.
 //!
 //! ## Clock offsets
 //!
@@ -195,20 +197,31 @@ fn interval_to_e7(interval: i64) -> i64 {
     }
 }
 
+#[allow(clippy::cast_possible_truncation)]
 fn advance_time(hour: &mut u8, minute: &mut u8, seconds_e7: &mut u64, interval_e7: i64) {
     let new_s = i128::from(*seconds_e7) + i128::from(interval_e7);
-    if new_s == i128::from(60_i64 * 10_000_000) {
-        *seconds_e7 = 0;
-        *minute = minute.saturating_add(1);
-        if *minute == 60 {
-            *minute = 0;
-            *hour = hour.saturating_add(1);
-        }
-    } else if new_s < 0 {
+    if new_s < 0 {
         *seconds_e7 = 0;
     } else {
-        // Real intervals fit easily; the i128 conversion is only for safety.
-        *seconds_e7 = u64::try_from(new_s).unwrap_or(u64::MAX);
+        let new_s64 = u64::try_from(new_s).unwrap_or(u64::MAX);
+        // Leap-second exception: 23:59:60.0 through 23:59:60.9999999 are
+        // preserved as-is.  The spec forbids >= 23:59:61 and requires new
+        // spans at day boundaries, so we don't need to carry past this.
+        if *hour == 23 && *minute == 59 && new_s64 < 610_000_000 {
+            *seconds_e7 = new_s64;
+        } else if new_s64 >= 60 * 10_000_000 {
+            let carry_minutes = new_s64 / 10_000_000 / 60;
+            *seconds_e7 = new_s64 % (60 * 10_000_000);
+            let new_minute = u64::from(*minute) + carry_minutes;
+            if new_minute >= 60 {
+                *hour = hour.saturating_add((new_minute / 60) as u8);
+                *minute = (new_minute % 60) as u8;
+            } else {
+                *minute = new_minute as u8;
+            }
+        } else {
+            *seconds_e7 = new_s64;
+        }
     }
 }
 
@@ -325,18 +338,31 @@ mod tests {
     }
 
     #[test]
-    fn leap_second_does_not_reset() {
-        // Start at 23:59:60 (leap second), 0.5 s interval, 3 epochs.
-        // Seconds should be 60.0, 60.5, 61.0 — never resetting (no exact 60 hit).
+    fn leap_second_preserved_through_60_dot_9() {
+        // Start at 23:59:60.0 (leap second), 0.5 s interval, 4 epochs.
+        // The leap-second range 23:59:60.0 – 23:59:60.9999999 is preserved
+        // without carrying.  23:59:61.0 is illegal per the spec, and
+        // conformant encoders MUST split spans at leap seconds, but we
+        // still handle it gracefully by carrying.
         let start = 23 * 100_000_000_000 + 59 * 1_000_000_000 + 60 * 10_000_000;
-        let p = build_payload(3, &[(5_000_000, 2, 20_200_718, start)], &[]);
-        // Note: decode_time would reject 60 in the minute field, but seconds
-        // are stored as residual. Let's verify:
+        let p = build_payload(4, &[(5_000_000, 3, 20_200_718, start)], &[]);
         let e = parse(&p).unwrap();
-        let secs: Vec<u64> = e.epochs.iter().map(|ep| ep.seconds_e7).collect();
-        assert_eq!(secs, vec![600_000_000, 605_000_000, 610_000_000]);
-        assert_eq!(e.epochs[0].minute, 59);
+        // Epoch 0: 23:59:60.0 (leap second, preserved)
         assert_eq!(e.epochs[0].hour, 23);
+        assert_eq!(e.epochs[0].minute, 59);
+        assert_eq!(e.epochs[0].seconds_e7, 600_000_000);
+        // Epoch 1: 23:59:60.5 (still in leap-second range, preserved)
+        assert_eq!(e.epochs[1].hour, 23);
+        assert_eq!(e.epochs[1].minute, 59);
+        assert_eq!(e.epochs[1].seconds_e7, 605_000_000);
+        // Epoch 2: 61.0 s >= 61 → carry → 24:00:01.0
+        assert_eq!(e.epochs[2].hour, 24);
+        assert_eq!(e.epochs[2].minute, 0);
+        assert_eq!(e.epochs[2].seconds_e7, 10_000_000);
+        // Epoch 3: 24:00:01.5
+        assert_eq!(e.epochs[3].hour, 24);
+        assert_eq!(e.epochs[3].minute, 0);
+        assert_eq!(e.epochs[3].seconds_e7, 15_000_000);
     }
 
     #[test]
