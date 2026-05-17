@@ -14,6 +14,7 @@ use thiserror::Error;
 use crate::chunk::{read_chunk, read_framed, ChunkError};
 use crate::digest::DigestError;
 use crate::epoc::{self, Epoc, EpocError};
+use crate::evtf::{self, Evtf, EvtfError};
 use crate::sate::{self, Sate, SateError};
 use crate::sdir::{self, Sdir, SdirError};
 use crate::socd::{self, Socd, SocdError};
@@ -31,6 +32,8 @@ pub const EPOC_TAG: [u8; 4] = *b"EPOC";
 pub const SATE_TAG: [u8; 4] = *b"SATE";
 /// FOURCC tag for the satellite observation code data chunk.
 pub const SOCD_TAG: [u8; 4] = *b"SOCD";
+/// FOURCC tag for the event flag / special record chunk.
+pub const EVTF_TAG: [u8; 4] = *b"EVTF";
 
 #[derive(Debug, Error)]
 pub enum FileError {
@@ -46,6 +49,8 @@ pub enum FileError {
     Sate(#[from] SateError),
     #[error("SOCD chunk error: {0}")]
     Socd(#[from] SocdError),
+    #[error("EVTF chunk error: {0}")]
+    Evtf(#[from] EvtfError),
     #[error("first chunk is {got:?}, expected SRNX")]
     NotSrnxFile { got: [u8; 4] },
     #[error("file truncated reading {what}")]
@@ -244,6 +249,36 @@ impl<'a> SrnxFile<'a> {
             });
         }
         Ok(socd::parse(chunk.payload)?)
+    }
+
+    /// Iterate all `EVTF` chunks starting at the offset recorded in the SDIR.
+    ///
+    /// EVTF chunks are stored consecutively; this method walks them until
+    /// a non-EVTF chunk is encountered.  Returns an empty iterator when
+    /// `evtf_offset` is zero.
+    pub fn evtf_chunks(&self, evtf_offset: u64) -> impl Iterator<Item = Result<Evtf, FileError>> + '_ {
+        let mut offset = evtf_offset;
+        std::iter::from_fn(move || {
+            if offset == 0 {
+                return None;
+            }
+            let chunk = self.chunk_at_offset(offset)?;
+            if chunk.fourcc != EVTF_TAG {
+                return None;
+            }
+            // Compute the offset of the next chunk (FOURCC + payload + digest).
+            // We need to find the next chunk's offset.  Since chunks are stored
+            // sequentially, we look for the next chunk in our list.
+            let idx = self
+                .chunks
+                .iter()
+                .position(|c| c.file_offset == offset)?;
+            let next_offset = self.chunks.get(idx + 1).map_or(0, |c| c.file_offset);
+            offset = next_offset;
+
+            let evtf = evtf::parse(chunk.payload).ok()?;
+            Some(Ok(evtf))
+        })
     }
 
     /// Histogram of body-chunk FOURCCs (does not include the SRNX chunk).

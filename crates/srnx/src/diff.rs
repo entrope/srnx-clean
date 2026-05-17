@@ -78,9 +78,32 @@ pub const MAX_DIFFS: usize = 50;
 pub fn compare(a: &ObsFile, b: &ObsFile, label_a: &str, label_b: &str) -> Vec<String> {
     let mut out = Vec::new();
 
+    compare_headers(a, b, label_a, label_b, &mut out);
     compare_epochs(a, b, label_a, label_b, &mut out);
     compare_observations(a, b, label_a, label_b, &mut out);
     out
+}
+
+// ---------------------------------------------------------------------------
+// Header comparison
+// ---------------------------------------------------------------------------
+
+fn compare_headers(a: &ObsFile, b: &ObsFile, label_a: &str, label_b: &str, out: &mut Vec<String>) {
+    if out.len() >= MAX_DIFFS {
+        return;
+    }
+
+    // HeaderText is already LF-normalized.
+    let a_text = a.header.as_str();
+    let b_text = b.header.as_str();
+
+    if a_text != b_text {
+        let a_lines = a_text.lines().count();
+        let b_lines = b_text.lines().count();
+        out.push(format!(
+            "header text differs: {label_a}={a_lines} lines {label_b}={b_lines} lines"
+        ));
+    }
 }
 
 fn compare_epochs(

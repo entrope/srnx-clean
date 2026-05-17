@@ -1,4 +1,4 @@
-//! Parser for RINEX observation file headers (versions 2.x and 3.x/4.x).
+//! RINEX observation file header: raw text with query helpers.
 //!
 //! RINEX headers are line-oriented, fixed-column text:
 //!
@@ -7,28 +7,124 @@
 //!     ^^^^---- content (cols 1-60) ----^^^^---- label (cols 61-80) ----^^^^
 //! ```
 //!
-//! All recognized labels live in cols 61-80. The interpretation of cols 1-60
-//! depends on the label. Multi-line headers (e.g. `# / TYPES OF OBSERV`) are
-//! continued by repeating the label on subsequent lines, with the leading
-//! count field blank.
+//! The primary public type is [`HeaderText`], which wraps the raw text and
+//! provides label-based lookup helpers.  A full semantic parser exists
+//! internally for the library's own needs (extracting observation codes for
+//! SOCD parsing) but is `#[doc(hidden)]` — end-user code should work with
+//! the raw text directly.
 //!
 //! In SRNX `RHDR` chunks, newlines are LF only (per `Succinct_RINEX.md`),
 //! even when the source file used CRLF. We're tolerant of either.
-//!
-//! ## Scope (Phase 4 of the plan)
-//!
-//! * Required fields: version, file type, satellite system.
-//! * Observation codes: full multi-line accumulation for both v2
-//!   (`# / TYPES OF OBSERV`) and v3+ (`SYS / # / OBS TYPES`).
-//! * Best-effort parsing of common metadata (marker, antenna, receiver,
-//!   `INTERVAL`, `TIME OF FIRST OBS`, `LEAP SECONDS`, `APPROX POSITION XYZ`).
-//! * Anything else is preserved as either a comment or a `(label, content)`
-//!   pair under [`Header::unknown_lines`] so we don't silently drop data.
 
 use std::collections::BTreeMap;
 
 use thiserror::Error;
 
+// ---------------------------------------------------------------------------
+// Public API: HeaderText — raw text with label-based query helpers
+// ---------------------------------------------------------------------------
+
+/// Split a RINEX header line into (content, label).  Content is cols 1–60,
+/// label is cols 61–80 (trailing whitespace trimmed).  Returns `None` for
+/// lines shorter than 60 characters.
+fn split_label(line: &str) -> Option<(&str, &str)> {
+    if line.len() < 60 {
+        return None;
+    }
+    let (content, label_field) = line.split_at(60);
+    let label = label_field.trim_end();
+    Some((content, label))
+}
+
+/// RINEX header stored as raw text, with helpers for label-based lookups.
+///
+/// The text is normalized to LF newlines.  Labels are extracted from
+/// columns 61–80 of each line; trailing whitespace in the label is ignored
+/// for matching.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeaderText {
+    text: String,
+}
+
+impl HeaderText {
+    /// Create from raw bytes. Normalizes CRLF/CR to LF.
+    #[must_use]
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        let text = String::from_utf8_lossy(bytes)
+            .replace("\r\n", "\n")
+            .replace('\r', "\n");
+        Self { text }
+    }
+
+    /// Create from a `&str`. Normalizes CRLF/CR to LF.
+    #[must_use]
+    pub fn from_text(text: &str) -> Self {
+        Self {
+            text: text.replace("\r\n", "\n").replace('\r', "\n"),
+        }
+    }
+
+    /// Return the raw header text (LF-normalized).
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.text
+    }
+
+    /// Return an iterator over the header lines (excluding newline chars).
+    pub fn lines(&self) -> impl Iterator<Item = &str> + '_ {
+        self.text.lines()
+    }
+
+    /// Return the content (cols 1–60, trimmed) of the last line whose label
+    /// (cols 61–80) matches `label`.  Trailing whitespace in both the stored
+    /// label and the query is ignored.
+    ///
+    /// Returns `None` if no matching line is found.
+    #[must_use]
+    pub fn get_line(&self, label: &str) -> Option<String> {
+        let query_label = label.trim_end();
+        let mut result = None;
+        for line in self.text.lines() {
+            if let Some((_, stored_label)) = split_label(line) {
+                if stored_label == query_label {
+                    result = Some(line[..60.min(line.len())].trim_end().to_string());
+                }
+            }
+        }
+        result
+    }
+
+    /// Return an iterator over the content (cols 1–60, trimmed) of all lines
+    /// whose label matches `label`, in file order.
+    ///
+    /// Trailing whitespace in both the stored label and the query is ignored.
+    pub fn get_lines<'a>(&'a self, label: &'a str) -> impl Iterator<Item = String> + 'a {
+        let query_label = label.trim_end();
+        self.text.lines().filter_map(move |line| {
+            let (_, stored_label) = split_label(line)?;
+            if stored_label == query_label {
+                Some(line[..60.min(line.len())].trim_end().to_string())
+            } else {
+                None
+            }
+        })
+    }
+}
+
+impl std::ops::Deref for HeaderText {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.text
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Internal parser (#[doc(hidden)]) — used by the library for obs-code
+// extraction; end-user code should prefer HeaderText directly.
+// ---------------------------------------------------------------------------
+
+#[doc(hidden)]
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum HeaderError {
     #[error("RINEX header is not valid UTF-8")]
@@ -195,6 +291,7 @@ pub struct EpochTime {
     pub time_system: String,
 }
 
+#[doc(hidden)]
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Header {
     pub version: Version,
@@ -258,6 +355,7 @@ const LABEL_LEAP: &str = "LEAP SECONDS";
 const LABEL_WAVELEN: &str = "WAVELENGTH FACT L1/2";
 const LABEL_END: &str = "END OF HEADER";
 
+#[doc(hidden)]
 pub fn parse(bytes: &[u8]) -> Result<Header, HeaderError> {
     let text = std::str::from_utf8(bytes).map_err(|_| HeaderError::NotUtf8)?;
     let mut state = Parser::default();
@@ -504,15 +602,6 @@ impl Parser {
 // ---------------------------------------------------------------------------
 // Per-line parsers
 // ---------------------------------------------------------------------------
-
-fn split_label(line: &str) -> Option<(&str, &str)> {
-    if line.len() < 60 {
-        return None;
-    }
-    let (content, label_field) = line.split_at(60);
-    let label = label_field.trim_end();
-    Some((content, label))
-}
 
 fn trim60(content: &str) -> String {
     content.trim_end().to_string()
@@ -1015,5 +1104,102 @@ mod tests {
         let h = parse(&rhdr).unwrap();
         assert_eq!(h.version.major, 2);
         assert!(!h.obs_codes.by_system.is_empty());
+    }
+
+    // ── HeaderText tests ─────────────────────────────────────────────────
+
+    fn hline(content: &str, label: &str) -> String {
+        let mut s = content.to_string();
+        if s.len() < 60 {
+            s.push_str(&" ".repeat(60 - s.len()));
+        } else {
+            s.truncate(60);
+        }
+        s.push_str(label);
+        s
+    }
+
+    #[test]
+    fn header_text_from_bytes_normalizes_crlf() {
+        let bytes = b"line one\r\nline two\r\n";
+        let h = HeaderText::from_bytes(bytes);
+        assert_eq!(h.as_str(), "line one\nline two\n");
+    }
+
+    #[test]
+    fn header_text_get_line() {
+        let text = format!(
+            "{}\n{}\n{}\n",
+            hline("     2.11           OBSERVATION DATA    M                   ", "RINEX VERSION / TYPE"),
+            hline("AT01                                                        ", "MARKER NAME"),
+            hline("", "END OF HEADER")
+        );
+        let h = HeaderText::from_text(&text);
+        assert_eq!(
+            h.get_line("MARKER NAME"),
+            Some("AT01".to_string())
+        );
+        assert_eq!(h.get_line("NONEXISTENT"), None);
+    }
+
+    #[test]
+    fn header_text_get_line_trailing_ws_invariant() {
+        // Label stored with extra trailing spaces should still match.
+        let text = format!(
+            "{}\n{}\n",
+            hline("AT01                                                        ", "MARKER NAME   "),
+            hline("", "END OF HEADER")
+        );
+        let h = HeaderText::from_text(&text);
+        assert_eq!(h.get_line("MARKER NAME"), Some("AT01".to_string()));
+    }
+
+    #[test]
+    fn header_text_get_line_last_wins() {
+        // When a label appears multiple times, last occurrence wins.
+        let text = format!(
+            "{}\n{}\n{}\n",
+            hline("OLD NAME                                                      ", "MARKER NAME"),
+            hline("NEW NAME                                                      ", "MARKER NAME"),
+            hline("", "END OF HEADER")
+        );
+        let h = HeaderText::from_text(&text);
+        assert_eq!(h.get_line("MARKER NAME"), Some("NEW NAME".to_string()));
+    }
+
+    #[test]
+    fn header_text_get_lines() {
+        let text = format!(
+            "{}\n{}\n{}\n",
+            hline("first comment                                                   ", "COMMENT"),
+            hline("second comment                                                  ", "COMMENT"),
+            hline("", "END OF HEADER")
+        );
+        let h = HeaderText::from_text(&text);
+        let lines: Vec<String> = h.get_lines("COMMENT").collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], "first comment");
+        assert_eq!(lines[1], "second comment");
+    }
+
+    #[test]
+    fn header_text_deref() {
+        let text = "some header\nEND OF HEADER\n";
+        let h = HeaderText::from_text(text);
+        // Deref to str works.
+        assert!(h.contains("header"));
+        assert!(h.starts_with("some"));
+    }
+
+    #[test]
+    fn header_text_fixture_at01() {
+        let Some(rhdr) = try_load_rhdr("at012000.srnx") else {
+            return;
+        };
+        let h = HeaderText::from_bytes(&rhdr);
+        assert_eq!(h.get_line("MARKER NAME"), Some("AT01".to_string()));
+        // Multiple COMMENT lines.
+        let comments: Vec<String> = h.get_lines("COMMENT").collect();
+        assert!(!comments.is_empty());
     }
 }

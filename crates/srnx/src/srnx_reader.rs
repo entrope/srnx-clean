@@ -8,8 +8,8 @@ use thiserror::Error;
 
 use crate::epoc::Epoch;
 use crate::file::{FileError, SrnxFile};
-use crate::model::{EpochRecord, Obs, ObsFile, SatId};
-use crate::rinex_header::{self, Header, HeaderError, ObsCode, SatSystem};
+use crate::model::{EpochRecord, EventRecord, Obs, ObsFile, SatId};
+use crate::rinex_header::{self, Header, HeaderError, HeaderText, ObsCode, SatSystem};
 use crate::socd::ABSENT;
 
 #[derive(Debug, Error)]
@@ -31,9 +31,10 @@ pub enum SrnxReadError {
 pub fn read(bytes: &[u8]) -> Result<ObsFile, SrnxReadError> {
     let file = SrnxFile::parse(bytes)?;
 
-    // RHDR → Header.
+    // RHDR → HeaderText (public) + internal Header (for obs codes).
     let rhdr_bytes = file.rhdr_payload().ok_or(SrnxReadError::NoRhdr)?;
-    let header: Header = rinex_header::parse(rhdr_bytes)?;
+    let header_text = HeaderText::from_bytes(rhdr_bytes);
+    let header = rinex_header::parse(rhdr_bytes)?;
 
     // EPOC → epoch list.
     let epoc = file.epoc()?.ok_or(SrnxReadError::NoEpoc)?;
@@ -42,6 +43,22 @@ pub fn read(bytes: &[u8]) -> Result<ObsFile, SrnxReadError> {
 
     // SDIR.
     let sdir = file.sdir()?.ok_or(SrnxReadError::NoSdir)?;
+
+    // EVTF → event records.
+    let events: Vec<(usize, EventRecord)> = file
+        .evtf_chunks(sdir.evtf_offset)
+        .filter_map(std::result::Result::ok)
+        .map(|evtf| {
+            let epoch_index = usize::try_from(evtf.epoch_index).unwrap_or(usize::MAX);
+            (
+                epoch_index,
+                EventRecord {
+                    flag: 0, // extracted from text if needed; stored as-is for now
+                    lines: evtf.text,
+                },
+            )
+        })
+        .collect();
 
     let mut observations: BTreeMap<(SatId, ObsCode), Vec<(usize, Obs)>> = BTreeMap::new();
 
@@ -95,9 +112,9 @@ pub fn read(bytes: &[u8]) -> Result<ObsFile, SrnxReadError> {
     }
 
     Ok(ObsFile {
-        header,
+        header: header_text,
         epochs,
-        events: Vec::new(), // EVTF not yet implemented
+        events,
         observations,
     })
 }

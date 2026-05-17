@@ -6,6 +6,7 @@ pub mod chunk;
 pub mod diff;
 pub mod digest;
 pub mod epoc;
+pub mod evtf;
 pub mod file;
 pub mod leb128;
 pub mod model;

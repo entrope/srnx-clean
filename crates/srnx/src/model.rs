@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::rinex_header::{Header, ObsCode, SatSystem};
+use crate::rinex_header::{HeaderText, ObsCode, SatSystem};
 
 /// Satellite identifier: system code byte (`b'G'`, `b'R'`, `b'E'`, …) + PRN.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -77,7 +77,9 @@ pub struct EventRecord {
 /// epochs where the observation is present are listed; absent epochs have no
 /// entry.  Epoch indices refer to positions in the `epochs` field.
 pub struct ObsFile {
-    pub header: Header,
+    /// RINEX header as raw text with label-based query helpers.
+    /// Normalized to LF newlines.
+    pub header: HeaderText,
     /// Observation epochs in file order (flag 0 or 1 records only).
     pub epochs: Vec<EpochRecord>,
     /// Special event records with their position (index into `epochs` of the

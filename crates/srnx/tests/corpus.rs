@@ -516,3 +516,40 @@ fn corrupt_srnx_chunk_digest_detected() {
         "SRNX chunk digest should fail after CRC corruption"
     );
 }
+
+// ── EVTF parsing ─────────────────────────────────────────────────────────────
+
+/// Verify that EVTF chunks are parsed and populated in the [`ObsFile`].
+#[test]
+fn evtf_azst1830_has_events() {
+    let Some(bytes) = try_load("azst1830.srnx") else {
+        eprintln!("skip evtf_azst1830: fixture not found");
+        return;
+    };
+    let file = srnx::srnx_reader::read(&bytes).expect("parse azst1830.srnx");
+    // azst1830 has 23 EVTF chunks per srnx_scan.
+    assert!(
+        file.events.len() >= 23,
+        "expected at least 23 events, got {}",
+        file.events.len()
+    );
+    // Each event should have at least one line of text.
+    for (epoch_idx, event) in &file.events {
+        assert!(
+            !event.lines.is_empty(),
+            "event at epoch {epoch_idx} has no text lines"
+        );
+    }
+}
+
+/// Verify that files without EVTF chunks have an empty events list.
+#[test]
+fn evtf_abmf_no_events() {
+    let Some(bytes) = try_load("abmf.srnx") else {
+        eprintln!("skip evtf_abmf: fixture not found");
+        return;
+    };
+    let file = srnx::srnx_reader::read(&bytes).expect("parse abmf.srnx");
+    // abmf has 0 EVTF chunks per srnx_scan.
+    assert!(file.events.is_empty(), "expected no events, got {}", file.events.len());
+}
