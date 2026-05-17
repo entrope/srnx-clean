@@ -1,12 +1,12 @@
-use std::collections::BTreeSet;
 use std::process::ExitCode;
 
 use srnx::digest::DigestId;
+use srnx::diff;
 use srnx::epoc;
 use srnx::file::SrnxFile;
-use srnx::model::{EpochRecord, Obs, ObsFile, SatId};
+use srnx::model::ObsFile;
 use srnx::rinex2_obs;
-use srnx::rinex_header::{self, ObsCode};
+use srnx::rinex_header;
 use srnx::srnx_reader;
 
 fn main() -> ExitCode {
@@ -103,9 +103,6 @@ fn load_obs_file(path: &str) -> Result<ObsFile, Box<dyn std::error::Error>> {
 // Diff
 // ---------------------------------------------------------------------------
 
-/// Maximum number of individual differences to report before stopping.
-const MAX_DIFFS: usize = 50;
-
 fn run_diff(path_a: &str, path_b: &str, quiet: bool) -> ExitCode {
     let a = match load_obs_file(path_a) {
         Ok(f) => f,
@@ -122,237 +119,25 @@ fn run_diff(path_a: &str, path_b: &str, quiet: bool) -> ExitCode {
         }
     };
 
-    let mut diffs = 0usize;
-    diff_all(&a, &b, path_a, path_b, quiet, &mut diffs);
+    let diffs = diff::compare(&a, &b, path_a, path_b);
+    let count = diffs.len();
 
-    if diffs == 0 {
+    if count == 0 {
         if !quiet {
             println!("Files match.");
         }
         ExitCode::SUCCESS
     } else {
         if !quiet {
-            if diffs >= MAX_DIFFS {
-                println!("(stopped after {MAX_DIFFS} differences)");
+            for d in &diffs {
+                println!("{d}");
             }
-            println!("{diffs} difference(s) found.");
+            if count >= diff::MAX_DIFFS {
+                println!("(stopped after {} differences)", diff::MAX_DIFFS);
+            }
+            println!("{count} difference(s) found.");
         }
         ExitCode::from(1)
-    }
-}
-
-fn diff_all(
-    a: &ObsFile,
-    b: &ObsFile,
-    label_a: &str,
-    label_b: &str,
-    quiet: bool,
-    diffs: &mut usize,
-) {
-    diff_epochs(a, b, label_a, label_b, quiet, diffs);
-    diff_observations(a, b, label_a, label_b, quiet, diffs);
-}
-
-// -- Epoch comparison --------------------------------------------------------
-
-fn diff_epochs(
-    a: &ObsFile,
-    b: &ObsFile,
-    label_a: &str,
-    label_b: &str,
-    quiet: bool,
-    diffs: &mut usize,
-) {
-    let na = a.epochs.len();
-    let nb = b.epochs.len();
-    if na != nb {
-        bump(diffs, quiet, || {
-            format!("epoch count: {label_a}={na}  {label_b}={nb}")
-        });
-    }
-
-    let common = na.min(nb);
-    for i in 0..common {
-        if *diffs >= MAX_DIFFS {
-            break;
-        }
-        let ea = &a.epochs[i];
-        let eb = &b.epochs[i];
-        if !epochs_eq(ea, eb) {
-            bump(diffs, quiet, || {
-                format!(
-                    "epoch[{i}] timestamp: {} vs {}",
-                    fmt_epoch(ea),
-                    fmt_epoch(eb)
-                )
-            });
-        } else if ea.clock_offset_e12 != eb.clock_offset_e12 {
-            bump(diffs, quiet, || {
-                format!(
-                    "epoch[{i}] clock offset: {} vs {} (×10⁻¹²)",
-                    ea.clock_offset_e12, eb.clock_offset_e12
-                )
-            });
-        }
-    }
-}
-
-fn epochs_eq(a: &EpochRecord, b: &EpochRecord) -> bool {
-    a.year == b.year
-        && a.month == b.month
-        && a.day == b.day
-        && a.hour == b.hour
-        && a.minute == b.minute
-        && a.seconds_e7 == b.seconds_e7
-}
-
-fn fmt_epoch(e: &EpochRecord) -> String {
-    let whole = e.seconds_e7 / 10_000_000;
-    let frac = e.seconds_e7 % 10_000_000;
-    format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:07}",
-        e.year, e.month, e.day, e.hour, e.minute, whole, frac
-    )
-}
-
-// -- Observation comparison --------------------------------------------------
-
-fn diff_observations(
-    a: &ObsFile,
-    b: &ObsFile,
-    label_a: &str,
-    label_b: &str,
-    quiet: bool,
-    diffs: &mut usize,
-) {
-    let keys_a: BTreeSet<_> = a.observations.keys().collect();
-    let keys_b: BTreeSet<_> = b.observations.keys().collect();
-
-    for key in keys_a.union(&keys_b) {
-        if *diffs >= MAX_DIFFS {
-            break;
-        }
-        match (a.observations.get(key), b.observations.get(key)) {
-            (None, _) => bump(diffs, quiet, || {
-                format!("{}/{}: only in {label_b}", key.0, key.1.as_str())
-            }),
-            (_, None) => bump(diffs, quiet, || {
-                format!("{}/{}: only in {label_a}", key.0, key.1.as_str())
-            }),
-            (Some(sa), Some(sb)) => {
-                diff_series(**key, sa, sb, a, b, label_a, label_b, quiet, diffs);
-            }
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn diff_series(
-    key: (SatId, ObsCode),
-    sa: &[(usize, Obs)],
-    sb: &[(usize, Obs)],
-    file_a: &ObsFile,
-    file_b: &ObsFile,
-    label_a: &str,
-    label_b: &str,
-    quiet: bool,
-    diffs: &mut usize,
-) {
-    let prefix = format!("{}/{}", key.0, key.1.as_str());
-    let mut ia = 0;
-    let mut ib = 0;
-
-    while ia < sa.len() && ib < sb.len() && *diffs < MAX_DIFFS {
-        let (ea, oa) = sa[ia];
-        let (eb, ob) = sb[ib];
-
-        match ea.cmp(&eb) {
-            std::cmp::Ordering::Less => {
-                bump(diffs, quiet, || {
-                    format!(
-                        "{prefix} epoch[{ea}] {}: only in {label_a}",
-                        fmt_epoch(&file_a.epochs[ea])
-                    )
-                });
-                ia += 1;
-            }
-            std::cmp::Ordering::Greater => {
-                bump(diffs, quiet, || {
-                    format!(
-                        "{prefix} epoch[{eb}] {}: only in {label_b}",
-                        fmt_epoch(&file_b.epochs[eb])
-                    )
-                });
-                ib += 1;
-            }
-            std::cmp::Ordering::Equal => {
-                if !obs_eq(oa, ob) {
-                    bump(diffs, quiet, || {
-                        format!(
-                            "{prefix} epoch[{ea}] {}: value mismatch: {}  {}",
-                            fmt_epoch(&file_a.epochs[ea]),
-                            fmt_obs_detail(oa, label_a),
-                            fmt_obs_detail(ob, label_b),
-                        )
-                    });
-                }
-                ia += 1;
-                ib += 1;
-            }
-        }
-    }
-
-    while ia < sa.len() && *diffs < MAX_DIFFS {
-        let (ea, _) = sa[ia];
-        bump(diffs, quiet, || {
-            format!(
-                "{prefix} epoch[{ea}] {}: only in {label_a}",
-                fmt_epoch(&file_a.epochs[ea])
-            )
-        });
-        ia += 1;
-    }
-    while ib < sb.len() && *diffs < MAX_DIFFS {
-        let (eb, _) = sb[ib];
-        bump(diffs, quiet, || {
-            format!(
-                "{prefix} epoch[{eb}] {}: only in {label_b}",
-                fmt_epoch(&file_b.epochs[eb])
-            )
-        });
-        ib += 1;
-    }
-}
-
-fn obs_eq(a: Obs, b: Obs) -> bool {
-    let phys_a = i128::from(a.value) * i128::from(a.scale);
-    let phys_b = i128::from(b.value) * i128::from(b.scale);
-    phys_a == phys_b
-        && norm_indicator(a.lli) == norm_indicator(b.lli)
-        && norm_indicator(a.ssi) == norm_indicator(b.ssi)
-}
-
-/// Treat `b'0'` and `b' '` as equivalent (both mean "no information").
-#[inline]
-fn norm_indicator(b: u8) -> u8 {
-    if b == b'0' {
-        b' '
-    } else {
-        b
-    }
-}
-
-fn fmt_obs_detail(obs: Obs, label: &str) -> String {
-    let pm = i128::from(obs.value) * i128::from(obs.scale);
-    let lli = norm_indicator(obs.lli) as char;
-    let ssi = norm_indicator(obs.ssi) as char;
-    format!("{label}(phys={pm}, lli='{lli}', ssi='{ssi}')")
-}
-
-fn bump(diffs: &mut usize, quiet: bool, msg: impl FnOnce() -> String) {
-    *diffs += 1;
-    if !quiet && *diffs <= MAX_DIFFS {
-        println!("{}", msg());
     }
 }
 

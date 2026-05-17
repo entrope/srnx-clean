@@ -10,11 +10,11 @@
 //!   3. Digest-corruption negatives — flip bits in file regions covered by
 //!      CRC32C and verify the mismatch is reported.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use srnx::diff;
 use srnx::file::SrnxFile;
-use srnx::model::{EpochRecord, Obs, ObsFile};
 use srnx::rinex2_obs;
 use srnx::socd;
 use srnx::srnx_reader;
@@ -334,138 +334,9 @@ fn golden_sbst1200() {
 
 // ── Round-trip semantic comparison ───────────────────────────────────────────
 
-const MAX_DIFFS: usize = 30;
-
-fn fmt_epoch(e: &EpochRecord) -> String {
-    let whole = e.seconds_e7 / 10_000_000;
-    let frac = e.seconds_e7 % 10_000_000;
-    format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:07}",
-        e.year, e.month, e.day, e.hour, e.minute, whole, frac
-    )
-}
-
-fn epochs_eq(a: &EpochRecord, b: &EpochRecord) -> bool {
-    a.year == b.year
-        && a.month == b.month
-        && a.day == b.day
-        && a.hour == b.hour
-        && a.minute == b.minute
-        && a.seconds_e7 == b.seconds_e7
-}
-
-fn obs_eq(a: Obs, b: Obs) -> bool {
-    let pa = i128::from(a.value) * i128::from(a.scale);
-    let pb = i128::from(b.value) * i128::from(b.scale);
-    pa == pb && norm_ind(a.lli) == norm_ind(b.lli) && norm_ind(a.ssi) == norm_ind(b.ssi)
-}
-
-fn norm_ind(b: u8) -> u8 {
-    if b == b'0' {
-        b' '
-    } else {
-        b
-    }
-}
-
 /// Returns a list of human-readable difference strings (empty = files match).
-fn compare_obs_files(a: &ObsFile, b: &ObsFile, la: &str, lb: &str) -> Vec<String> {
-    let mut out = Vec::new();
-
-    // Epoch counts and timestamps.
-    if a.epochs.len() != b.epochs.len() {
-        out.push(format!(
-            "epoch count: {la}={} {lb}={}",
-            a.epochs.len(),
-            b.epochs.len()
-        ));
-    }
-    let common = a.epochs.len().min(b.epochs.len());
-    for i in 0..common {
-        if out.len() >= MAX_DIFFS {
-            break;
-        }
-        let (ea, eb) = (&a.epochs[i], &b.epochs[i]);
-        if !epochs_eq(ea, eb) {
-            out.push(format!(
-                "epoch[{i}] timestamp: {} vs {}",
-                fmt_epoch(ea),
-                fmt_epoch(eb)
-            ));
-        } else if ea.clock_offset_e12 != eb.clock_offset_e12 {
-            out.push(format!(
-                "epoch[{i}] clock offset: {} vs {} (×10⁻¹²)",
-                ea.clock_offset_e12, eb.clock_offset_e12
-            ));
-        }
-    }
-
-    // Observation series.
-    let keys_a: BTreeSet<_> = a.observations.keys().collect();
-    let keys_b: BTreeSet<_> = b.observations.keys().collect();
-    for key in keys_a.union(&keys_b) {
-        if out.len() >= MAX_DIFFS {
-            break;
-        }
-        match (a.observations.get(key), b.observations.get(key)) {
-            (None, _) => out.push(format!("{}/{}: only in {lb}", key.0, key.1.as_str())),
-            (_, None) => out.push(format!("{}/{}: only in {la}", key.0, key.1.as_str())),
-            (Some(sa), Some(sb)) => {
-                let pfx = format!("{}/{}", key.0, key.1.as_str());
-                let mut ia = 0;
-                let mut ib = 0;
-                while ia < sa.len() && ib < sb.len() && out.len() < MAX_DIFFS {
-                    let (ea, oa) = sa[ia];
-                    let (eb, ob) = sb[ib];
-                    match ea.cmp(&eb) {
-                        std::cmp::Ordering::Less => {
-                            out.push(format!(
-                                "{pfx} epoch[{ea}] {}: only in {la}",
-                                fmt_epoch(&a.epochs[ea])
-                            ));
-                            ia += 1;
-                        }
-                        std::cmp::Ordering::Greater => {
-                            out.push(format!(
-                                "{pfx} epoch[{eb}] {}: only in {lb}",
-                                fmt_epoch(&b.epochs[eb])
-                            ));
-                            ib += 1;
-                        }
-                        std::cmp::Ordering::Equal => {
-                            if !obs_eq(oa, ob) {
-                                let pa = i128::from(oa.value) * i128::from(oa.scale);
-                                let pb = i128::from(ob.value) * i128::from(ob.scale);
-                                out.push(format!(
-                                    "{pfx} epoch[{ea}] {}: {la}(phys={pa}) vs {lb}(phys={pb})",
-                                    fmt_epoch(&a.epochs[ea])
-                                ));
-                            }
-                            ia += 1;
-                            ib += 1;
-                        }
-                    }
-                }
-                while ia < sa.len() && out.len() < MAX_DIFFS {
-                    let (ea, _) = sa[ia];
-                    out.push(format!(
-                        "{pfx} epoch[{ea}] {}: only in {la}",
-                        fmt_epoch(&a.epochs[ea])
-                    ));
-                    ia += 1;
-                }
-                while ib < sb.len() && out.len() < MAX_DIFFS {
-                    let (eb, _) = sb[ib];
-                    out.push(format!(
-                        "{pfx} epoch[{eb}] {}: only in {lb}",
-                        fmt_epoch(&b.epochs[eb])
-                    ));
-                    ib += 1;
-                }
-            }
-        }
-    }
-    out
+fn compare_obs_files(a: &srnx::model::ObsFile, b: &srnx::model::ObsFile, la: &str, lb: &str) -> Vec<String> {
+    diff::compare(a, b, la, lb)
 }
 
 // ── Static round-trip tests (pre-existing RINEX v2 / SRNX file pairs) ────────

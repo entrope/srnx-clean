@@ -3,6 +3,7 @@
 //! See `CLAUDE.md` and `PLAN.md` at the workspace root for scope and roadmap.
 
 pub mod chunk;
+pub mod diff;
 pub mod digest;
 pub mod epoc;
 pub mod file;
