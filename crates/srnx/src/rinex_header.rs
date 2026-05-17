@@ -1130,15 +1130,18 @@ mod tests {
     fn header_text_get_line() {
         let text = format!(
             "{}\n{}\n{}\n",
-            hline("     2.11           OBSERVATION DATA    M                   ", "RINEX VERSION / TYPE"),
-            hline("AT01                                                        ", "MARKER NAME"),
+            hline(
+                "     2.11           OBSERVATION DATA    M                   ",
+                "RINEX VERSION / TYPE"
+            ),
+            hline(
+                "AT01                                                        ",
+                "MARKER NAME"
+            ),
             hline("", "END OF HEADER")
         );
         let h = HeaderText::from_text(&text);
-        assert_eq!(
-            h.get_line("MARKER NAME"),
-            Some("AT01".to_string())
-        );
+        assert_eq!(h.get_line("MARKER NAME"), Some("AT01".to_string()));
         assert_eq!(h.get_line("NONEXISTENT"), None);
     }
 
@@ -1147,7 +1150,10 @@ mod tests {
         // Label stored with extra trailing spaces should still match.
         let text = format!(
             "{}\n{}\n",
-            hline("AT01                                                        ", "MARKER NAME   "),
+            hline(
+                "AT01                                                        ",
+                "MARKER NAME   "
+            ),
             hline("", "END OF HEADER")
         );
         let h = HeaderText::from_text(&text);
@@ -1159,8 +1165,14 @@ mod tests {
         // When a label appears multiple times, last occurrence wins.
         let text = format!(
             "{}\n{}\n{}\n",
-            hline("OLD NAME                                                      ", "MARKER NAME"),
-            hline("NEW NAME                                                      ", "MARKER NAME"),
+            hline(
+                "OLD NAME                                                      ",
+                "MARKER NAME"
+            ),
+            hline(
+                "NEW NAME                                                      ",
+                "MARKER NAME"
+            ),
             hline("", "END OF HEADER")
         );
         let h = HeaderText::from_text(&text);
@@ -1171,8 +1183,14 @@ mod tests {
     fn header_text_get_lines() {
         let text = format!(
             "{}\n{}\n{}\n",
-            hline("first comment                                                   ", "COMMENT"),
-            hline("second comment                                                  ", "COMMENT"),
+            hline(
+                "first comment                                                   ",
+                "COMMENT"
+            ),
+            hline(
+                "second comment                                                  ",
+                "COMMENT"
+            ),
             hline("", "END OF HEADER")
         );
         let h = HeaderText::from_text(&text);

@@ -335,7 +335,12 @@ fn golden_sbst1200() {
 // ── Round-trip semantic comparison ───────────────────────────────────────────
 
 /// Returns a list of human-readable difference strings (empty = files match).
-fn compare_obs_files(a: &srnx::model::ObsFile, b: &srnx::model::ObsFile, la: &str, lb: &str) -> Vec<String> {
+fn compare_obs_files(
+    a: &srnx::model::ObsFile,
+    b: &srnx::model::ObsFile,
+    la: &str,
+    lb: &str,
+) -> Vec<String> {
     diff::compare(a, b, la, lb)
 }
 
@@ -551,5 +556,9 @@ fn evtf_abmf_no_events() {
     };
     let file = srnx::srnx_reader::read(&bytes).expect("parse abmf.srnx");
     // abmf has 0 EVTF chunks per srnx_scan.
-    assert!(file.events.is_empty(), "expected no events, got {}", file.events.len());
+    assert!(
+        file.events.is_empty(),
+        "expected no events, got {}",
+        file.events.len()
+    );
 }

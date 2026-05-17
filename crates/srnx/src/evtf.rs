@@ -50,10 +50,7 @@ pub fn parse(payload: &[u8]) -> Result<Evtf, EvtfError> {
         text_bytes.lines().map(|l| format!("{l}\n")).collect()
     };
 
-    Ok(Evtf {
-        epoch_index,
-        text,
-    })
+    Ok(Evtf { epoch_index, text })
 }
 
 #[cfg(test)]

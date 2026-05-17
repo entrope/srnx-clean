@@ -106,19 +106,11 @@ fn compare_headers(a: &ObsFile, b: &ObsFile, label_a: &str, label_b: &str, out: 
     }
 }
 
-fn compare_epochs(
-    a: &ObsFile,
-    b: &ObsFile,
-    label_a: &str,
-    label_b: &str,
-    out: &mut Vec<String>,
-) {
+fn compare_epochs(a: &ObsFile, b: &ObsFile, label_a: &str, label_b: &str, out: &mut Vec<String>) {
     let na = a.epochs.len();
     let nb = b.epochs.len();
     if na != nb {
-        out.push(format!(
-            "epoch count: {label_a}={na}  {label_b}={nb}"
-        ));
+        out.push(format!("epoch count: {label_a}={na}  {label_b}={nb}"));
     }
 
     let common = na.min(nb);
@@ -158,16 +150,8 @@ fn compare_observations(
             break;
         }
         match (a.observations.get(key), b.observations.get(key)) {
-            (None, _) => out.push(format!(
-                "{}/{}: only in {label_b}",
-                key.0,
-                key.1.as_str()
-            )),
-            (_, None) => out.push(format!(
-                "{}/{}: only in {label_a}",
-                key.0,
-                key.1.as_str()
-            )),
+            (None, _) => out.push(format!("{}/{}: only in {label_b}", key.0, key.1.as_str())),
+            (_, None) => out.push(format!("{}/{}: only in {label_a}", key.0, key.1.as_str())),
             (Some(sa), Some(sb)) => {
                 compare_series(**key, sa, sb, a, b, label_a, label_b, out);
             }

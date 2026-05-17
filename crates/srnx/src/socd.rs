@@ -17,10 +17,11 @@
 //! ```text
 //! ULEB128  byte_length_of_rle_data
 //! repeating until byte_length exhausted:
-//!   u8       character (e.g. b' ', b'1' .. b'9')
-//!   ULEB128  (run_count - 1)
+//!   ULEB128  (count - 1) * 11 + idx
 //! ```
 //!
+//! The eleven-symbol alphabet is `" 0123456789"` (space, then `'0'`–`'9'`).
+//! `idx` is the zero-based index within that alphabet (0 = space, 1–10 = `'0'`–`'9'`).
 //! Any observations beyond the encoded runs default to `b' '`.
 //!
 //! ## Packed observation encoding
@@ -36,8 +37,9 @@
 //! ```
 //!
 //! Block headers:
-//! - `0x00..=0x9F`: bit-matrix block — `m = 8 << (header >> 5)` values,
-//!   `k+1` bits each, where `k = header & 0x1F`.
+//! - `0x00..=0xDF`: bit-matrix block — `m` values from top-3-bit lookup
+//!   (0→8, 1→16, 2→24, 3→32, 4→40, 5→48, 6→112), `k+1` bits each,
+//!   where `k = header & 0x1F`.
 //! - `0xFD`: absent-values run — ULEB128 (count-1); emits `ABSENT` without
 //!   advancing the delta accumulators.
 //! - `0xFE`: zero-delta run — ULEB128 (count-1); feeds zero into the
@@ -176,10 +178,12 @@ pub fn parse(payload: &[u8]) -> Result<Socd, SocdError> {
         *block_header_counts.entry(header).or_default() += 1;
 
         match header {
-            0x00..=0x9F => {
+            0x00..=0xDF => {
                 // Bit-matrix block.
-                let m_shift = header >> 5; // 0..=4
-                let m = 8usize << m_shift; // 8, 16, 32, 64, 128
+                // Top 3 bits select block size: 0→8, 1→16, 2→24, 3→32, 4→40, 5→48, 6→112
+                let m_table: [usize; 7] = [8, 16, 24, 32, 40, 48, 112];
+                let m_index = (header >> 5) as usize;
+                let m = m_table[m_index];
                 let k = (header & 0x1F) as usize;
                 let bits_per_value = k + 1; // 1..=32
                 let row_bytes = m / 8;
@@ -254,7 +258,11 @@ fn uleb_run_count(cursor: &mut &[u8]) -> Result<usize, SocdError> {
 
 /// Decode a LLI/SSI run-length block into a `Vec<u8>` of exactly `count`
 /// characters, space-padding any trailing unencoded observations.
+///
+/// Each run is a single ULEB128 value `(count - 1) * 11 + idx` where `idx`
+/// is the zero-based index in the 11-symbol alphabet `" 0123456789"`.
 fn decode_rle_block(cursor: &mut &[u8], count: usize) -> Result<Vec<u8>, SocdError> {
+    const ALPHABET: &[u8] = b" 0123456789";
     let byte_len_u64 = read_uleb128(cursor)?;
     let byte_len =
         usize::try_from(byte_len_u64).map_err(|_| SocdError::TooManyObservations(byte_len_u64))?;
@@ -268,9 +276,11 @@ fn decode_rle_block(cursor: &mut &[u8], count: usize) -> Result<Vec<u8>, SocdErr
 
     let mut out = Vec::with_capacity(count);
     while !rle.is_empty() && out.len() < count {
-        let ch = rle[0];
-        rle = &rle[1..];
-        let run = uleb_run_count(&mut rle)?.min(count - out.len());
+        let packed = read_uleb128(&mut rle)?;
+        let idx = (packed % 11) as usize;
+        let run = (packed / 11) as usize + 1;
+        let ch = ALPHABET[idx];
+        let run = run.min(count - out.len());
         for _ in 0..run {
             out.push(ch);
         }
@@ -641,12 +651,13 @@ mod tests {
     #[test]
     fn lli_rle_decoding() {
         // 4 observations: ' ', ' ', '1', ' '  → LLI RLE: (' ' ×2, '1' ×1, ' ' ×1)
-        // Stored as: [' ', 1, '1', 0, ' ', 0] = 6 bytes
+        // New encoding: packed ULEB128 = (count-1)*11 + idx
+        // ' ' = idx 0, '1' = idx 2 (space=0, '0'=1, '1'=2)
+        // Run ' ' ×2: (2-1)*11 + 0 = 11
+        // Run '1' ×1: (1-1)*11 + 2 = 2
         let mut lli_rle: Vec<u8> = Vec::new();
-        lli_rle.push(b' ');
-        lli_rle.extend(enc_uleb(1)); // run=2
-        lli_rle.push(b'1');
-        lli_rle.extend(enc_uleb(0)); // run=1
+        lli_rle.extend(enc_uleb(11)); // ' ' ×2
+        lli_rle.extend(enc_uleb(2)); // '1' ×1
                                      // Don't encode trailing spaces; they'll be padded.
 
         let mut out = b"G01\0L1\0\0".to_vec();

@@ -256,7 +256,10 @@ impl<'a> SrnxFile<'a> {
     /// EVTF chunks are stored consecutively; this method walks them until
     /// a non-EVTF chunk is encountered.  Returns an empty iterator when
     /// `evtf_offset` is zero.
-    pub fn evtf_chunks(&self, evtf_offset: u64) -> impl Iterator<Item = Result<Evtf, FileError>> + '_ {
+    pub fn evtf_chunks(
+        &self,
+        evtf_offset: u64,
+    ) -> impl Iterator<Item = Result<Evtf, FileError>> + '_ {
         let mut offset = evtf_offset;
         std::iter::from_fn(move || {
             if offset == 0 {
@@ -269,10 +272,7 @@ impl<'a> SrnxFile<'a> {
             // Compute the offset of the next chunk (FOURCC + payload + digest).
             // We need to find the next chunk's offset.  Since chunks are stored
             // sequentially, we look for the next chunk in our list.
-            let idx = self
-                .chunks
-                .iter()
-                .position(|c| c.file_offset == offset)?;
+            let idx = self.chunks.iter().position(|c| c.file_offset == offset)?;
             let next_offset = self.chunks.get(idx + 1).map_or(0, |c| c.file_offset);
             offset = next_offset;
 

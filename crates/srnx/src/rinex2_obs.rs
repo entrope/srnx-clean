@@ -686,7 +686,10 @@ mod uvfm_debug {
 
     fn try_load(name: &str) -> Option<ObsFile> {
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..").join("..").join("rnx-data").join(name);
+            .join("..")
+            .join("..")
+            .join("rnx-data")
+            .join(name);
         let bytes = std::fs::read(&path).ok()?;
         parse(&bytes).ok()
     }
@@ -704,9 +707,12 @@ mod uvfm_debug {
             eprintln!("G00 found!");
             for ((s, c), series) in &obs.observations {
                 if *s == g00 {
-                    eprintln!("G00/{}: {} obs, first epoch={}", 
-                        c.as_str(), series.len(), 
-                        series.first().map_or(999, |(i,_)| *i));
+                    eprintln!(
+                        "G00/{}: {} obs, first epoch={}",
+                        c.as_str(),
+                        series.len(),
+                        series.first().map_or(999, |(i, _)| *i)
+                    );
                 }
             }
         }

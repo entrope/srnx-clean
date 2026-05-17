@@ -1,7 +1,7 @@
 use std::process::ExitCode;
 
-use srnx::digest::DigestId;
 use srnx::diff;
+use srnx::digest::DigestId;
 use srnx::epoc;
 use srnx::file::SrnxFile;
 use srnx::model::ObsFile;
