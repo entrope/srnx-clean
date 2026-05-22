@@ -18,6 +18,8 @@ pub enum SrnxReadError {
     File(#[from] FileError),
     #[error("RINEX header error: {0}")]
     Header(#[from] HeaderError),
+    #[error("file-level digest mismatch")]
+    FileDigestMismatch,
     #[error("no RHDR chunk in SRNX file")]
     NoRhdr,
     #[error("no SDIR chunk in SRNX file")]
@@ -30,6 +32,10 @@ pub enum SrnxReadError {
 /// normalized [`ObsFile`] semantic model.
 pub fn read(bytes: &[u8]) -> Result<ObsFile, SrnxReadError> {
     let file = SrnxFile::parse(bytes)?;
+
+    if !file.file_digest_ok {
+        return Err(SrnxReadError::FileDigestMismatch);
+    }
 
     // RHDR → HeaderText (public) + internal Header (for obs codes).
     let rhdr_bytes = file.rhdr_payload().ok_or(SrnxReadError::NoRhdr)?;
@@ -251,6 +257,21 @@ mod tests {
         let phys_srnx = i128::from(first.value) * i128::from(first.scale);
         let phys_v2 = 128_250_890_432_i128;
         assert_eq!(phys_srnx, phys_v2, "G13/L1 physical value at epoch 0");
+    }
+
+    #[test]
+    fn rejects_tampered_file_digest() {
+        let Some(bytes) = std::fs::read(fixture("at012000.srnx")).ok() else {
+            return;
+        };
+        let mut tampered = bytes;
+        let last = tampered.len() - 1;
+        tampered[last] ^= 0x01; // flip a bit in the file-level digest
+        match read(&tampered) {
+            Ok(_) => panic!("tampered file should error"),
+            Err(SrnxReadError::FileDigestMismatch) => {} // expected
+            Err(e) => panic!("expected FileDigestMismatch, got {e:?}"),
+        }
     }
 
     #[test]

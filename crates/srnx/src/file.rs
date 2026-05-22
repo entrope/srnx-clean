@@ -119,21 +119,25 @@ impl<'a> SrnxFile<'a> {
         }
         let body_end = bytes.len() - file_dlen;
 
-        // 4. Verify file-level digest (covers everything between the SRNX
-        //    chunk's end and the trailer).
+        // 4. Verify file-level digest (covers entire file from the SRNX
+        //    FOURCC until just before the file-level digest at the end).
         let file_digest_bytes = &bytes[body_end..];
-        let file_covered = &bytes[body_start..body_end];
-        let file_digest_ok = match header.file_digest.verify(file_covered, file_digest_bytes) {
+        let file_digest_covered = &bytes[..body_end];
+        let file_digest_ok = match header
+            .file_digest
+            .verify(file_digest_covered, file_digest_bytes)
+        {
             Ok(()) => true,
             Err(DigestError::Mismatch) => false,
             Err(DigestError::Truncated { .. } | DigestError::Unknown(_)) => unreachable!(),
         };
 
         // 5. Walk body chunks, recording absolute file offsets.
+        let body_data = &bytes[body_start..body_end];
         let mut chunks = Vec::new();
-        let mut cursor = file_covered;
+        let mut cursor = body_data;
         while !cursor.is_empty() {
-            let consumed = file_covered.len() - cursor.len();
+            let consumed = body_data.len() - cursor.len();
             let file_offset = u64::try_from(body_start + consumed)
                 .expect("usize fits in u64 on every supported target");
             let (chunk, rest) = read_chunk(cursor, header.chunk_digest)?;

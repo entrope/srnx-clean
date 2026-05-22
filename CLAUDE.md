@@ -64,8 +64,9 @@ These are easy to miss on a first read of `docs/Succinct_RINEX.md`:
   can be patched in after the rest of the file is written). Read exactly the
   declared payload length; ignore extra bytes.
 - Per-chunk digests cover `FOURCC || payload_length || payload`, **not** just
-  the payload. The file-level digest covers everything after the SRNX chunk's
-  digest, with length supplied externally (file size).
+  the payload. The file-level digest covers the entire file from the start
+  of the `SRNX` FOURCC until just before the file-level digest, with length
+  supplied externally (file size).
 - `RHDR` and `EVTF` newlines are LF only — even when the source RINEX used
   CRLF.
 - `SATE` offsets to `SOCD` are **SLEB128 relative to the start of the SATE

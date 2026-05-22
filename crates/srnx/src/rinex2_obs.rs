@@ -348,7 +348,10 @@ fn is_any_header_line(line: &str) -> bool {
 fn is_continuation_line(line: &str) -> bool {
     line.len() > 32
         && line[..32].chars().all(|c| c == ' ')
-        && line.as_bytes().get(32).is_some_and(|&b| b.is_ascii_alphabetic())
+        && line
+            .as_bytes()
+            .get(32)
+            .is_some_and(|&b| b.is_ascii_alphabetic())
 }
 
 /// Return a character at byte offset `i` in `line`, or `b' '` if the line is
