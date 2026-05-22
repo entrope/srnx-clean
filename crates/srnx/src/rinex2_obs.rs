@@ -121,15 +121,12 @@ pub fn parse(input: &[u8]) -> Result<ObsFile, Rinex2Error> {
         let line = data_lines[pos];
         let line_no = base_line + pos + 1; // 1-based line number for errors
 
-        // A blank line between epochs is technically non-conforming but
-        // appears in some real-world files.  Skip it.
-        if line.trim().is_empty() {
+        // Parse the epoch / satellite header line.
+        let Ok((epoch_rec, flag, num_entries)) = parse_epoch_header(line, line_no) else {
+            // Not a valid epoch header — skip to the next plausible one.
             pos += 1;
             continue;
-        }
-
-        // Parse the epoch / satellite header line.
-        let (epoch_rec, flag, num_entries) = parse_epoch_header(line, line_no)?;
+        };
         pos += 1;
 
         // Epoch flags 2–5: event record.  The num_entries field is the count of
@@ -158,22 +155,125 @@ pub fn parse(input: &[u8]) -> Result<ObsFile, Rinex2Error> {
         collect_sats(line, &mut sats); // 'line' still refers to the header line
 
         // Continuation lines for >12 satellites.
-        while sats.len() < num_entries {
-            if pos >= data_lines.len() {
-                return Err(Rinex2Error::UnexpectedEof {
-                    expected: num_entries,
-                    got: sats.len(),
-                });
+        let mut cont_malformed = false;
+        while sats.len() < num_entries && pos < data_lines.len() {
+            // Each continuation line must actually look like one.
+            if !is_continuation_line(data_lines[pos]) {
+                cont_malformed = true;
+                break;
             }
+            let before = sats.len();
             collect_sats(data_lines[pos], &mut sats);
+            // Stop if this continuation line added no satellites.
+            if sats.len() == before {
+                break;
+            }
             pos += 1;
         }
         sats.truncate(num_entries);
 
+        // --- Validate epoch structure before committing ---
+        //
+        // A well-formed epoch has:
+        //   1. No more satellite IDs than the claimed num_entries (fewer is OK
+        //      for non-conforming files; claimed count still governs obs lines).
+        //   2. No epoch-header line embedded in the observation block.
+        //   3. The line after the observation block is an epoch header (or EOF).
+        //
+        // If any check fails, discard this epoch and scan forward to the
+        // next epoch header.
+
+        let obs_lines_total = num_entries * obs_lines_per_sat;
+
+        // Check 1: continuation lines were malformed or we collected MORE
+        // satellites than claimed (indicates we misparsed an obs line as a
+        // continuation).  Fewer satellites than claimed is non-conforming but
+        // recoverable — the claimed count still tells us how many obs lines
+        // to consume.
+        let sat_count_ok = sats.len() <= num_entries;
+
+        // Check 2: is there an epoch or event header line within the expected
+        // observation block?  If so, the epoch structure is broken — skip to
+        // that header.
+        let mut malformed = cont_malformed || !sat_count_ok;
+        let mut skip_to: Option<usize> = None;
+        if !malformed {
+            for i in pos..pos + obs_lines_total {
+                if i >= data_lines.len() {
+                    malformed = true;
+                    break;
+                }
+                if is_any_header_line(data_lines[i]) {
+                    skip_to = Some(i);
+                    malformed = true;
+                    break;
+                }
+            }
+        }
+
+        // Check 3: the line after the observation block should be an epoch
+        // header, event record header, or EOF.  Non-conforming files
+        // (e.g., teqc-spliced) may have extra lines (comments, blanks) between
+        // epochs.  Scan forward to find the next epoch or event header; if
+        // found nearby, skip the extra lines after parsing observations.
+        // Only mark malformed if no header appears within a reasonable distance.
+        let mut skip_extra_to: Option<usize> = None;
+        if !malformed {
+            let after_obs = pos + obs_lines_total;
+            if after_obs < data_lines.len() && !is_any_header_line(data_lines[after_obs]) {
+                // Scan forward for the next epoch or event header.
+                let mut scan_pos = after_obs;
+                let mut found_next = None;
+                while scan_pos < data_lines.len() {
+                    if is_any_header_line(data_lines[scan_pos]) {
+                        found_next = Some(scan_pos);
+                        break;
+                    }
+                    scan_pos += 1;
+                    // Give up after scanning too far — something is genuinely wrong.
+                    if scan_pos - after_obs > 100 {
+                        break;
+                    }
+                }
+                if let Some(next_header) = found_next {
+                    // Extra lines between epochs — remember to skip them.
+                    skip_extra_to = Some(next_header);
+                } else {
+                    // No header found — genuinely malformed.
+                    malformed = true;
+                }
+            }
+            // At EOF with exactly the right number of lines is fine.
+        }
+
+        if malformed {
+            // Already found an epoch header mid-block? Jump there.
+            if let Some(target) = skip_to {
+                pos = target;
+                continue;
+            }
+            // Otherwise scan forward from after the expected block.
+            let scan_from = pos + obs_lines_total.min(data_lines.len().saturating_sub(pos));
+            pos = scan_from;
+            while pos < data_lines.len() {
+                if is_any_header_line(data_lines[pos]) {
+                    break;
+                }
+                pos += 1;
+            }
+            continue;
+        }
+
+        // --- Valid epoch — parse observations ---
+
         // Flag 6 (cycle-slip record): same obs format as flags 0/1, but we
         // discard the observations and do not add an epoch entry.
         if flag == 6 {
-            pos += sats.len() * obs_lines_per_sat;
+            pos += obs_lines_total;
+            // Skip any extra lines between epochs.
+            if let Some(target) = skip_extra_to {
+                pos = target;
+            }
             continue;
         }
 
@@ -182,14 +282,6 @@ pub fn parse(input: &[u8]) -> Result<ObsFile, Rinex2Error> {
         epochs.push(epoch_rec);
 
         for &sat in &sats {
-            let avail = data_lines.len().saturating_sub(pos);
-            if avail < obs_lines_per_sat {
-                return Err(Rinex2Error::UnexpectedEof {
-                    expected: obs_lines_per_sat,
-                    got: avail,
-                });
-            }
-
             for (obs_line_idx, obs_chunk) in
                 data_lines[pos..pos + obs_lines_per_sat].iter().enumerate()
             {
@@ -205,6 +297,11 @@ pub fn parse(input: &[u8]) -> Result<ObsFile, Rinex2Error> {
                 }
             }
             pos += obs_lines_per_sat;
+        }
+
+        // Skip any extra lines between epochs (e.g., teqc splice comments).
+        if let Some(target) = skip_extra_to {
+            pos = target;
         }
     }
 
@@ -224,6 +321,34 @@ pub fn parse(input: &[u8]) -> Result<ObsFile, Rinex2Error> {
 #[inline]
 fn obs_lines_count(num_obs: usize) -> usize {
     num_obs.div_ceil(5)
+}
+
+/// Check if a line could be an epoch header or event record header.
+/// Uses a dummy line number since we only care about Ok/Err.
+///
+/// Fast-path: check the separator spaces at positions 26–27 and the epoch
+/// flag digit at position 28 before calling the full parser.  Observation
+/// lines have the hundredths/tenths of a seconds value at 26–27 (digits or
+/// `.`), so a header line must have spaces there and a digit at 28.
+fn is_any_header_line(line: &str) -> bool {
+    let b = line.as_bytes();
+    if b.len() < 32
+        || b[26] != b' '
+        || b[27] != b' '
+        || !b[28].is_ascii_digit()
+    {
+        return false;
+    }
+    parse_epoch_header(line, 0).is_ok()
+}
+
+/// Heuristic: does this line look like an epoch-header continuation?
+///
+/// Continuation lines start with 32 spaces then a letter (system id).
+fn is_continuation_line(line: &str) -> bool {
+    line.len() > 32
+        && line[..32].chars().all(|c| c == ' ')
+        && line.as_bytes().get(32).is_some_and(|&b| b.is_ascii_alphabetic())
 }
 
 /// Return a character at byte offset `i` in `line`, or `b' '` if the line is
@@ -276,7 +401,7 @@ fn parse_int_field(line: &str, start: usize, width: usize) -> i64 {
 /// Returns `(EpochRecord, flag, num_entries)` where `num_entries` is the
 /// number of satellite IDs to read (or special-record lines for events).
 fn parse_epoch_header(line: &str, line_no: usize) -> Result<(EpochRecord, u8, usize), Rinex2Error> {
-    if line.len() < 26 {
+    if line.len() < 32 {
         return Err(Rinex2Error::EpochLineTooShort(line_no));
     }
 
@@ -297,6 +422,14 @@ fn parse_epoch_header(line: &str, line_no: usize) -> Result<(EpochRecord, u8, us
     //  29-31 : num satellites (I3)
     //  32-67 : up to 12 satellite IDs  (12 × A1,I2)
     //  68-79 : receiver clock offset (F12.9, optional)
+
+    // Verify separator positions are spaces.  This rejects observation data
+    // lines that happen to have digits at timestamp positions.
+    for &sep_pos in &[3, 6, 9, 12, 26, 27] {
+        if byte_at(line, sep_pos) != b' ' {
+            return Err(Rinex2Error::BadEpochHeader(line_no));
+        }
+    }
 
     let y2 = u8::try_from(parse_int_field(line, 1, 2))
         .map_err(|_| Rinex2Error::BadEpochHeader(line_no))?;
@@ -321,6 +454,19 @@ fn parse_epoch_header(line: &str, line_no: usize) -> Result<(EpochRecord, u8, us
     }
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let flag = flag_raw as u8;
+
+    // Validate timestamp ranges to reject observation data lines that
+    // happen to have digits at epoch-header positions.  Events (flags 2-5)
+    // may have missing timestamps in non-conforming files.
+    let timestamp_present = month != 0 || day != 0 || hour != 0 || minute != 0 || sec_f64 != 0.0;
+    if timestamp_present {
+        if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 {
+            return Err(Rinex2Error::BadEpochHeader(line_no));
+        }
+    } else if !(2..=5).contains(&flag) {
+        // Normal epochs must have a valid timestamp.
+        return Err(Rinex2Error::BadEpochHeader(line_no));
+    }
 
     let num_entries_raw = parse_int_field(line, 29, 3);
     if num_entries_raw < 0 {
@@ -369,7 +515,9 @@ fn collect_sats(line: &str, sats: &mut Vec<SatId>) {
         let prn_ones = byte_at(line, start + 2);
 
         // A blank system or PRN field means no more satellites on this line.
-        if sys_byte == b' ' && prn_tens == b' ' && prn_ones == b' ' {
+        // Also break if the system byte is blank but PRN chars aren't both digits
+        // (this avoids misreading observation data as GPS satellite IDs).
+        if sys_byte == b' ' && (!prn_tens.is_ascii_digit() || !prn_ones.is_ascii_digit()) {
             break;
         }
 
@@ -380,15 +528,13 @@ fn collect_sats(line: &str, sats: &mut Vec<SatId>) {
             SatSystem(sys_byte)
         };
 
-        let p1 = if prn_tens == b' ' {
-            0u8
-        } else {
-            prn_tens - b'0'
+        let p1 = match prn_tens {
+            b'0'..=b'9' => prn_tens - b'0',
+            _ => 0, // non-digit (e.g. truncated line) → treat as 0
         };
-        let p0 = if prn_ones == b' ' {
-            0u8
-        } else {
-            prn_ones - b'0'
+        let p0 = match prn_ones {
+            b'0'..=b'9' => prn_ones - b'0',
+            _ => 0,
         };
         let prn = p1 * 10 + p0;
         sats.push(SatId::new(system, prn));
@@ -679,42 +825,3 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-mod uvfm_debug {
-    use super::*;
-    use std::collections::BTreeSet;
-
-    fn try_load(name: &str) -> Option<ObsFile> {
-        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("rnx-data")
-            .join(name);
-        let bytes = std::fs::read(&path).ok()?;
-        parse(&bytes).ok()
-    }
-
-    #[test]
-    fn debug_uvfm_satellites() {
-        let obs = try_load("uvfm1210.26o").expect("should parse");
-        let sats: BTreeSet<_> = obs.observations.keys().map(|(s, _)| *s).collect();
-        eprintln!("RINEX satellites ({}):", sats.len());
-        for s in &sats {
-            eprintln!("  {} (prn={})", s, s.prn);
-        }
-        let g00 = SatId::new(SatSystem::GPS, 0);
-        if sats.contains(&g00) {
-            eprintln!("G00 found!");
-            for ((s, c), series) in &obs.observations {
-                if *s == g00 {
-                    eprintln!(
-                        "G00/{}: {} obs, first epoch={}",
-                        c.as_str(),
-                        series.len(),
-                        series.first().map_or(999, |(i, _)| *i)
-                    );
-                }
-            }
-        }
-    }
-}
