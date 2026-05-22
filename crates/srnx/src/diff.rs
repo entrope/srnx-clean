@@ -93,9 +93,11 @@ fn compare_headers(a: &ObsFile, b: &ObsFile, label_a: &str, label_b: &str, out: 
         return;
     }
 
-    // HeaderText is already LF-normalized.
-    let a_text = a.header.as_str();
-    let b_text = b.header.as_str();
+    // HeaderText is already LF-normalized.  RINEX v2 lines are 80-char
+    // fixed-width (trailing spaces); SRNX RHDR strips trailing whitespace.
+    // Normalize both to trailing-space-free before comparing.
+    let a_text = norm_header(a.header.as_str());
+    let b_text = norm_header(b.header.as_str());
 
     if a_text != b_text {
         let a_lines = a_text.lines().count();
@@ -104,6 +106,16 @@ fn compare_headers(a: &ObsFile, b: &ObsFile, label_a: &str, label_b: &str, out: 
             "header text differs: {label_a}={a_lines} lines {label_b}={b_lines} lines"
         ));
     }
+}
+
+/// Strip trailing whitespace from each line so that 80-column RINEX v2
+/// headers compare equal to SRNX RHDR headers (which drop column padding).
+fn norm_header(text: &str) -> String {
+    text.lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
 }
 
 fn compare_epochs(a: &ObsFile, b: &ObsFile, label_a: &str, label_b: &str, out: &mut Vec<String>) {
