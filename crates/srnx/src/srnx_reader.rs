@@ -10,6 +10,7 @@ use crate::epoc::Epoch;
 use crate::file::{FileError, SrnxFile};
 use crate::model::{EpochRecord, EventRecord, Obs, ObsFile, SatId};
 use crate::rinex_header::{self, Header, HeaderError, HeaderText, ObsCode, SatSystem};
+use crate::soc2::{self, Column};
 use crate::socd::ABSENT;
 
 #[derive(Debug, Error)]
@@ -45,6 +46,7 @@ pub fn read(bytes: &[u8]) -> Result<ObsFile, SrnxReadError> {
     // EPOC → epoch list.
     let epoc = file.epoc()?.ok_or(SrnxReadError::NoEpoc)?;
     let total_epochs = epoc.epochs.len();
+    let timestamps = continuous_times(&epoc.epochs);
     let epochs: Vec<EpochRecord> = epoc.epochs.iter().map(epoch_to_record).collect();
 
     // SDIR.
@@ -79,20 +81,37 @@ pub fn read(bytes: &[u8]) -> Result<ObsFile, SrnxReadError> {
         let sate = file.sate_at(sate_file_offset, num_obs_codes, total_epochs)?;
         let present = &sate.present_epoch_indices;
 
-        for (code_idx, &rel_offset) in sate.socd_offsets.iter().enumerate() {
-            if rel_offset == 0 || code_idx >= obs_codes.len() {
+        let times: Vec<i128> = present.iter().map(|&i| timestamps[i]).collect();
+        let columns: Vec<Option<Column>> = sate
+            .socd_offsets
+            .iter()
+            .map(|&rel_offset| {
+                if rel_offset == 0 {
+                    return Ok(None);
+                }
+                let offset = sate_file_offset.checked_add_signed(rel_offset).ok_or(
+                    FileError::Truncated {
+                        what: "observation offset out of range",
+                    },
+                )?;
+                let chunk = file.chunk_at_offset(offset).ok_or(FileError::Truncated {
+                    what: "observation chunk at advertised offset",
+                })?;
+                match &chunk.fourcc {
+                    b"SOCD" => Ok(Some(Column::Socd(file.socd_at(offset)?))),
+                    b"SOC2" => Ok(Some(Column::Soc2(file.soc2_at(offset)?))),
+                    _ => Err(FileError::Truncated {
+                        what: "observation FOURCC mismatch",
+                    }),
+                }
+            })
+            .collect::<Result<_, FileError>>()?;
+        let decoded =
+            soc2::decode_satellite(&columns, obs_codes, &times).map_err(FileError::from)?;
+        for (code_idx, socd) in decoded.iter().enumerate() {
+            let Some(socd) = socd else {
                 continue;
-            }
-
-            // SOCD offset is relative to the start of the SATE chunk's FOURCC.
-            let socd_abs =
-                sate_file_offset
-                    .checked_add_signed(rel_offset)
-                    .ok_or(FileError::Truncated {
-                        what: "SOCD offset out of range",
-                    })?;
-
-            let socd = file.socd_at(socd_abs)?;
+            };
             let obs_code = obs_codes[code_idx];
 
             let series = observations.entry((sat_id, obs_code)).or_default();
@@ -123,6 +142,47 @@ pub fn read(bytes: &[u8]) -> Result<ObsFile, SrnxReadError> {
         events,
         observations,
     })
+}
+
+// Gregorian day numbers, plus any leap seconds represented by EPOC. A leap
+// second remains in its day's final minute and shifts all later days by 1 s.
+fn continuous_times(epochs: &[Epoch]) -> Vec<i128> {
+    let mut leap_days = std::collections::BTreeSet::new();
+    let day_number = |e: &Epoch| {
+        let year = i128::from(e.year) - 1;
+        let mut days = year * 365 + year / 4 - year / 100 + year / 400;
+        for month in 1..e.month {
+            days += match month {
+                4 | 6 | 9 | 11 => 30,
+                2 => {
+                    if e.year.is_multiple_of(4)
+                        && (!e.year.is_multiple_of(100) || e.year.is_multiple_of(400))
+                    {
+                        29
+                    } else {
+                        28
+                    }
+                }
+                _ => 31,
+            };
+        }
+        days + i128::from(e.day) - 1
+    };
+    for e in epochs {
+        if e.hour == 23 && e.minute == 59 && e.seconds_e7 >= 600_000_000 {
+            leap_days.insert(day_number(e));
+        }
+    }
+    epochs
+        .iter()
+        .map(|e| {
+            let day = day_number(e);
+            let leaps = i128::try_from(leap_days.range(..day).count()).unwrap();
+            (day * 86_400 + leaps + i128::from(e.hour) * 3600 + i128::from(e.minute) * 60)
+                * 10_000_000
+                + i128::from(e.seconds_e7)
+        })
+        .collect()
 }
 
 fn epoch_to_record(e: &Epoch) -> EpochRecord {
@@ -198,6 +258,28 @@ mod tests {
     fn try_read_srnx(name: &str) -> Option<ObsFile> {
         let bytes = std::fs::read(fixture(name)).ok()?;
         read(&bytes).ok()
+    }
+
+    #[test]
+    fn timestamps_cross_month_year_and_leap_second() {
+        let e = |year, month, day, hour, minute, seconds_e7| Epoch {
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            seconds_e7,
+            clock_offset_e12: 0,
+        };
+        let times = continuous_times(&[
+            e(2016, 12, 31, 23, 59, 590_000_000),
+            e(2016, 12, 31, 23, 59, 600_000_000),
+            e(2017, 1, 1, 0, 0, 0),
+        ]);
+        assert_eq!(times[1] - times[0], 10_000_000);
+        assert_eq!(times[2] - times[1], 10_000_000);
+        let times = continuous_times(&[e(2020, 2, 28, 0, 0, 0), e(2020, 3, 1, 0, 0, 0)]);
+        assert_eq!(times[1] - times[0], 2 * 86400 * 10_000_000);
     }
 
     #[test]

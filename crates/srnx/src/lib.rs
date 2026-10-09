@@ -14,6 +14,7 @@ pub mod rinex2_obs;
 pub mod rinex_header;
 pub mod sate;
 pub mod sdir;
+pub mod soc2;
 pub mod socd;
 pub mod srnx_header;
 pub mod srnx_reader;

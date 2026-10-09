@@ -332,11 +332,7 @@ fn obs_lines_count(num_obs: usize) -> usize {
 /// `.`), so a header line must have spaces there and a digit at 28.
 fn is_any_header_line(line: &str) -> bool {
     let b = line.as_bytes();
-    if b.len() < 32
-        || b[26] != b' '
-        || b[27] != b' '
-        || !b[28].is_ascii_digit()
-    {
+    if b.len() < 32 || b[26] != b' ' || b[27] != b' ' || !b[28].is_ascii_digit() {
         return false;
     }
     parse_epoch_header(line, 0).is_ok()
@@ -827,4 +823,3 @@ mod tests {
         }
     }
 }
-

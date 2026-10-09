@@ -324,13 +324,13 @@ fn extract_value(data: &[u8], i: usize, bits_per_value: usize, row_bytes: usize)
 ///   `acc[order-1] += d`
 ///   for i in `(0..order-1).rev()`: `acc[i] += acc[i+1]`
 ///   output = `acc[0]`
-struct DeltaIntegrator {
+pub(crate) struct DeltaIntegrator {
     order: usize,
     acc: [i64; 8],
 }
 
 impl DeltaIntegrator {
-    fn new(order: usize, initial: &[i64]) -> Self {
+    pub(crate) fn new(order: usize, initial: &[i64]) -> Self {
         debug_assert!(order <= 8 && order == initial.len());
         let mut acc = [0i64; 8];
         acc[..order].copy_from_slice(initial);
@@ -338,7 +338,7 @@ impl DeltaIntegrator {
     }
 
     #[inline]
-    fn integrate(&mut self, delta: i64) -> i64 {
+    pub(crate) fn integrate(&mut self, delta: i64) -> i64 {
         if self.order == 0 {
             return delta;
         }

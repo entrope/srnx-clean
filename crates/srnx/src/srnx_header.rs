@@ -4,7 +4,7 @@
 //! followed by optional padding (which a reader MUST ignore):
 //!
 //! 1. major version (currently 1)
-//! 2. minor version (currently 0)
+//! 2. minor version (currently 1)
 //! 3. per-chunk digest identifier
 //! 4. file-level digest identifier
 //! 5. file offset of the `SDIR` chunk (0 if absent)
@@ -16,6 +16,8 @@ use crate::leb128::{read_uleb128, LebError};
 
 /// Highest major version this implementation understands.
 pub const SUPPORTED_MAJOR: u64 = 1;
+/// Highest supported minor version.
+pub const SUPPORTED_MINOR: u64 = 1;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum SrnxHeaderError {
@@ -25,6 +27,8 @@ pub enum SrnxHeaderError {
     Digest(#[from] DigestError),
     #[error("unsupported SRNX major version {major} (this reader supports {SUPPORTED_MAJOR})")]
     UnsupportedMajor { major: u64 },
+    #[error("unsupported SRNX minor version {minor} (this reader supports {SUPPORTED_MINOR})")]
+    UnsupportedMinor { minor: u64 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +48,9 @@ pub fn parse(payload: &[u8]) -> Result<SrnxHeader, SrnxHeaderError> {
     let minor = read_uleb128(&mut cursor)?;
     if major != SUPPORTED_MAJOR {
         return Err(SrnxHeaderError::UnsupportedMajor { major });
+    }
+    if minor > SUPPORTED_MINOR {
+        return Err(SrnxHeaderError::UnsupportedMinor { minor });
     }
     let chunk_digest = DigestId::from_raw(read_uleb128(&mut cursor)?)?;
     let file_digest = DigestId::from_raw(read_uleb128(&mut cursor)?)?;
@@ -111,6 +118,15 @@ mod tests {
             parse(&bytes),
             Err(SrnxHeaderError::Digest(DigestError::Unknown(1)))
         ));
+    }
+
+    #[test]
+    fn minor_version_compatibility() {
+        assert_eq!(parse(&[1, 1, 0, 0, 0]).unwrap().minor, 1);
+        assert_eq!(
+            parse(&[1, 2, 0, 0, 0]),
+            Err(SrnxHeaderError::UnsupportedMinor { minor: 2 })
+        );
     }
 
     #[test]

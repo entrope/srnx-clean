@@ -44,13 +44,13 @@ pub enum SateError {
 pub struct Sate {
     /// Three-byte satellite identifier (e.g. `b"G01"`).
     pub sat_name: [u8; 3],
-    /// SLEB128 offsets of the corresponding `SOCD` chunk, relative to the
+    /// SLEB128 offsets of the corresponding `SOCD` or `SOC2` chunk, relative to the
     /// start of this `SATE` chunk's FOURCC tag.  One entry per observation
     /// code (in the same order as the `RHDR` obs-code list).  Zero means this
     /// observation code was never recorded for this satellite.
     pub socd_offsets: Vec<i64>,
     /// Sorted epoch indices (0-based into the `EPOC` list) at which this
-    /// satellite was observed.  Length equals the count stored in the SOCD.
+    /// satellite was observed. Length equals the observation chunk count.
     pub present_epoch_indices: Vec<usize>,
 }
 

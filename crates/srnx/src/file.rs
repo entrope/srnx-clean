@@ -17,6 +17,7 @@ use crate::epoc::{self, Epoc, EpocError};
 use crate::evtf::{self, Evtf, EvtfError};
 use crate::sate::{self, Sate, SateError};
 use crate::sdir::{self, Sdir, SdirError};
+use crate::soc2::{self, Soc2, Soc2Error};
 use crate::socd::{self, Socd, SocdError};
 use crate::srnx_header::{self, SrnxHeader, SrnxHeaderError};
 
@@ -32,6 +33,8 @@ pub const EPOC_TAG: [u8; 4] = *b"EPOC";
 pub const SATE_TAG: [u8; 4] = *b"SATE";
 /// FOURCC tag for the satellite observation code data chunk.
 pub const SOCD_TAG: [u8; 4] = *b"SOCD";
+/// FOURCC tag for revision 1.1 observation data.
+pub const SOC2_TAG: [u8; 4] = *b"SOC2";
 /// FOURCC tag for the event flag / special record chunk.
 pub const EVTF_TAG: [u8; 4] = *b"EVTF";
 
@@ -49,6 +52,8 @@ pub enum FileError {
     Sate(#[from] SateError),
     #[error("SOCD chunk error: {0}")]
     Socd(#[from] SocdError),
+    #[error("SOC2 chunk error: {0}")]
+    Soc2(#[from] Soc2Error),
     #[error("EVTF chunk error: {0}")]
     Evtf(#[from] EvtfError),
     #[error("first chunk is {got:?}, expected SRNX")]
@@ -253,6 +258,20 @@ impl<'a> SrnxFile<'a> {
             });
         }
         Ok(socd::parse(chunk.payload)?)
+    }
+
+    /// Parse SOC2 residuals and metadata at an absolute offset. Cross-signal
+    /// references must subsequently be resolved with `soc2::decode_satellite`.
+    pub fn soc2_at(&self, offset: u64) -> Result<Soc2, FileError> {
+        let chunk = self.chunk_at_offset(offset).ok_or(FileError::Truncated {
+            what: "SOC2 chunk at given offset",
+        })?;
+        if chunk.fourcc != SOC2_TAG {
+            return Err(FileError::Truncated {
+                what: "SOC2 FOURCC mismatch",
+            });
+        }
+        Ok(soc2::parse(chunk.payload)?)
     }
 
     /// Iterate all `EVTF` chunks starting at the offset recorded in the SDIR.
