@@ -10,6 +10,8 @@
 //!   3. Digest-corruption negatives — flip bits in file regions covered by
 //!      CRC32C and verify the mismatch is reported.
 
+#![allow(clippy::similar_names)]
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 

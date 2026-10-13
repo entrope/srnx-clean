@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 
 use thiserror::Error;
 
+use crate::compat::{cast_signed, split_first_chunk};
 use crate::leb128::{read_sleb128, read_uleb128, LebError};
 use crate::rinex_header::ObsCode;
 use crate::socd::{DeltaIntegrator, Socd, ABSENT};
@@ -110,9 +111,8 @@ fn initial(cursor: &mut &[u8], order: usize) -> Result<DeltaIntegrator, Soc2Erro
 /// Decode a SOC2 payload to scaled residuals. References are resolved separately.
 #[allow(clippy::too_many_lines)]
 pub fn parse(mut cursor: &[u8]) -> Result<Soc2, Soc2Error> {
-    let (name, rest) = cursor
-        .split_first_chunk::<8>()
-        .ok_or(Soc2Error::Truncated("observation name"))?;
+    let (name, rest) =
+        split_first_chunk::<8>(cursor).ok_or(Soc2Error::Truncated("observation name"))?;
     let obs_name = *name;
     cursor = rest;
     let count = index(
@@ -239,10 +239,10 @@ pub fn parse(mut cursor: &[u8]) -> Result<Soc2, Soc2Error> {
                     }
                 }
                 let u = (quotient << r) | remainder;
-                let delta = (u >> 1).cast_signed() ^ -((u & 1).cast_signed());
+                let delta = cast_signed(u >> 1) ^ -cast_signed(u & 1);
                 values.push(integrator.integrate(delta));
             }
-            if !bit.is_multiple_of(8) && unary[bit / 8] & ((1 << (8 - bit % 8)) - 1) != 0 {
+            if bit % 8 != 0 && unary[bit / 8] & ((1 << (8 - bit % 8)) - 1) != 0 {
                 return Err(Soc2Error::Invalid("nonzero Rice padding"));
             }
             packed = &unary[bit.div_ceil(8)..];
@@ -389,7 +389,7 @@ pub fn decode_satellite(
                 if j == i {
                     return Err(Soc2Error::Invalid("self SSI reference"));
                 }
-                if codes.get(j).is_none_or(|c| !c.as_str().starts_with('S')) {
+                if !codes.get(j).is_some_and(|c| c.as_str().starts_with('S')) {
                     return Err(Soc2Error::Invalid(
                         "SSI reference is not a signal-strength code",
                     ));
@@ -453,9 +453,10 @@ fn resolve(
             .ok_or(Soc2Error::Invalid("predictor index out of range"))?;
         if let Some(base) = reference.as_ref().and_then(|c| c.predictor().reference()) {
             if base == i
-                || columns
-                    .get(base)
-                    .is_none_or(|c| c.as_ref().is_some_and(|c| c.predictor() != Predictor::None))
+                || !columns.get(base).is_some_and(|c| {
+                    c.as_ref()
+                        .map_or(true, |c| c.predictor() == Predictor::None)
+                })
             {
                 return Err(Soc2Error::Invalid(
                     "prediction chain exceeds two steps or is cyclic",
@@ -504,6 +505,7 @@ fn resolve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::cast_unsigned;
 
     fn uleb(mut v: u64) -> Vec<u8> {
         let mut out = Vec::new();
@@ -517,7 +519,7 @@ mod tests {
         }
     }
     fn sleb(v: i64) -> Vec<u8> {
-        uleb(((v << 1) ^ (v >> 63)).cast_unsigned())
+        uleb(cast_unsigned((v << 1) ^ (v >> 63)))
     }
     fn payload(count: u64, mode: u64, ssi: &[u8], fields: &[u8], packed: &[u8]) -> Vec<u8> {
         let mut out = b"G01\0L1\0\0".to_vec();
@@ -587,7 +589,7 @@ mod tests {
                 packed.extend(matrix);
                 let mut bits = Vec::new();
                 for &u in &unsigned {
-                    bits.extend(std::iter::repeat_n(true, usize::try_from(u >> r).unwrap()));
+                    bits.extend(std::iter::repeat(true).take(usize::try_from(u >> r).unwrap()));
                     bits.push(false);
                 }
                 for byte_bits in bits.chunks(8) {
@@ -600,7 +602,7 @@ mod tests {
                 let s = parse(&payload(m.try_into().unwrap(), 0, &[], &[], &packed)).unwrap();
                 let expected: Vec<i64> = unsigned
                     .iter()
-                    .map(|&u| (u >> 1).cast_signed() ^ -((u & 1).cast_signed()))
+                    .map(|&u| cast_signed(u >> 1) ^ -cast_signed(u & 1))
                     .collect();
                 assert_eq!(s.data.values, expected, "m={m}, r={r}");
             }
@@ -820,7 +822,7 @@ mod tests {
         let p = Predictor::Value {
             reference: 0,
             num: i64::MAX,
-            den: i64::MAX.cast_unsigned(),
+            den: cast_unsigned(i64::MAX),
         };
         assert_eq!(
             prediction(p, 0, &reference, &[0]).unwrap(),

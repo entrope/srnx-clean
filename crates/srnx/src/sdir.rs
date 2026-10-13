@@ -12,6 +12,7 @@
 
 use thiserror::Error;
 
+use crate::compat::split_first_chunk;
 use crate::leb128::{read_uleb128, LebError};
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -42,11 +43,9 @@ pub fn parse(payload: &[u8]) -> Result<Sdir, SdirError> {
     let evtf_offset = read_uleb128(&mut cursor)?;
     let mut satellites = Vec::new();
     while !cursor.is_empty() {
-        let (sat_id_arr, rest) = cursor
-            .split_first_chunk::<3>()
-            .ok_or(SdirError::Truncated {
-                what: "satellite id",
-            })?;
+        let (sat_id_arr, rest) = split_first_chunk::<3>(cursor).ok_or(SdirError::Truncated {
+            what: "satellite id",
+        })?;
         let sat_id = *sat_id_arr;
         cursor = rest;
         let sate_offset = read_uleb128(&mut cursor)?;
@@ -82,9 +81,9 @@ mod tests {
     fn build(epoc: u64, evtf: u64, sats: &[(&[u8; 3], u64)]) -> Vec<u8> {
         let mut out = encode_uleb(epoc);
         out.extend(encode_uleb(evtf));
-        for (sat_id, sate_off) in sats {
-            out.extend_from_slice(*sat_id);
-            out.extend(encode_uleb(*sate_off));
+        for &(sat_id, sate_off) in sats {
+            out.extend_from_slice(sat_id);
+            out.extend(encode_uleb(sate_off));
         }
         out
     }

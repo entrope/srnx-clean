@@ -19,6 +19,7 @@
 
 use thiserror::Error;
 
+use crate::compat::split_first_chunk;
 use crate::digest::{DigestError, DigestId};
 use crate::leb128::{read_uleb128, LebError};
 
@@ -56,9 +57,8 @@ pub struct Framed<'a> {
 /// per-chunk digest. Used to bootstrap the first chunk of a file before its
 /// digest identifier is known.
 pub fn read_framed(input: &[u8]) -> Result<Framed<'_>, ChunkError> {
-    let (fourcc_arr, rest) = input
-        .split_first_chunk::<4>()
-        .ok_or(ChunkError::Truncated { what: "FOURCC" })?;
+    let (fourcc_arr, rest) =
+        split_first_chunk::<4>(input).ok_or(ChunkError::Truncated { what: "FOURCC" })?;
     let mut cursor: &[u8] = rest;
     let length = read_uleb128(&mut cursor)?;
     let length_usize =

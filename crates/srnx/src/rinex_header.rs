@@ -1020,7 +1020,7 @@ mod tests {
             .join("..")
             .join("rnx-data")
             .join(name);
-        let bytes = std::fs::read(&path).ok()?;
+        let bytes = std::fs::read(path).ok()?;
         let file = crate::file::SrnxFile::parse(&bytes).ok()?;
         file.rhdr_payload().map(<[u8]>::to_vec)
     }

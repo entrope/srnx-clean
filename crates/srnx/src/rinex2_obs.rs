@@ -696,7 +696,7 @@ mod tests {
             .join("..")
             .join("rnx-data")
             .join(name);
-        let bytes = std::fs::read(&path).ok()?;
+        let bytes = std::fs::read(path).ok()?;
         parse(&bytes).ok()
     }
 

@@ -466,7 +466,7 @@ mod tests {
             .join("..")
             .join("rnx-data")
             .join(name);
-        let bytes = std::fs::read(&path).ok()?;
+        let bytes = std::fs::read(path).ok()?;
         let file = crate::file::SrnxFile::parse(&bytes).ok()?;
         let sdir = file.sdir().ok().flatten()?;
         let chunk = file.chunk_at_offset(sdir.epoc_offset)?;

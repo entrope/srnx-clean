@@ -155,9 +155,7 @@ fn continuous_times(epochs: &[Epoch]) -> Vec<i128> {
             days += match month {
                 4 | 6 | 9 | 11 => 30,
                 2 => {
-                    if e.year.is_multiple_of(4)
-                        && (!e.year.is_multiple_of(100) || e.year.is_multiple_of(400))
-                    {
+                    if e.year % 4 == 0 && (e.year % 100 != 0 || e.year % 400 == 0) {
                         29
                     } else {
                         28

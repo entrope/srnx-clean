@@ -89,7 +89,9 @@ These are easy to miss on a first read of `docs/Succinct_RINEX.md`:
 
 ## Development conventions
 
-- Rust edition 2021, stable toolchain. MSRV: latest stable; no nightly features.
+- Rust edition 2021, stable toolchain. MSRV: 1.75 (`rust-version` in
+  Cargo.toml); keep `Cargo.lock` at lockfile v3 and dependencies pinned to
+  versions that build on 1.75. No nightly features.
 - `cargo fmt` and `cargo clippy --all-targets -- -D warnings` must pass.
 - Prefer `#![forbid(unsafe_code)]` in the library crate; the bit-matrix
   decoder does not require unsafe.

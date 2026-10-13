@@ -218,7 +218,7 @@ mod tests {
             .join("..")
             .join("rnx-data")
             .join(srnx_name);
-        let bytes = std::fs::read(&path).ok()?;
+        let bytes = std::fs::read(path).ok()?;
         let file = crate::file::SrnxFile::parse(&bytes).ok()?;
         let sdir = file.sdir().ok().flatten()?;
         let entry = sdir.satellites.first()?;

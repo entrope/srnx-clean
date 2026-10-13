@@ -51,6 +51,7 @@ use std::collections::BTreeMap;
 
 use thiserror::Error;
 
+use crate::compat::{cast_signed, split_first_chunk};
 use crate::leb128::{read_sleb128, read_uleb128, LebError};
 
 /// Sentinel value for absent observations.
@@ -110,8 +111,7 @@ pub fn parse(payload: &[u8]) -> Result<Socd, SocdError> {
     let mut cursor: &[u8] = payload;
 
     // 8-byte observation name.
-    let obs_name = cursor
-        .split_first_chunk::<8>()
+    let obs_name = split_first_chunk::<8>(cursor)
         .map(|(arr, rest)| {
             cursor = rest;
             *arr
@@ -205,7 +205,7 @@ pub fn parse(payload: &[u8]) -> Result<Socd, SocdError> {
             0xFD => {
                 // Absent-values run — do NOT advance the integrator.
                 let run = uleb_run_count(&mut obs)?;
-                values.extend(std::iter::repeat_n(ABSENT, run));
+                values.extend(std::iter::repeat(ABSENT).take(run));
             }
             0xFE => {
                 // Zero-delta run — feed zero deltas through the integrator.
@@ -310,7 +310,7 @@ fn extract_value(data: &[u8], i: usize, bits_per_value: usize, row_bytes: usize)
     }
     // Sign-extend from bits_per_value bits to 64 bits.
     let shift = 64 - bits_per_value;
-    (raw << shift).cast_signed() >> shift
+    cast_signed(raw << shift) >> shift
 }
 
 // ── Delta integrator ─────────────────────────────────────────────────────────
@@ -690,7 +690,7 @@ mod tests {
             .join("..")
             .join("rnx-data")
             .join(srnx_name);
-        let bytes = std::fs::read(&path).ok()?;
+        let bytes = std::fs::read(path).ok()?;
         let file = crate::file::SrnxFile::parse(&bytes).ok()?;
         let socd_chunks: Vec<_> = file
             .chunks
@@ -763,7 +763,7 @@ mod tests {
             .join("..")
             .join("rnx-data")
             .join("at012000.srnx");
-        let Ok(bytes) = std::fs::read(&path) else {
+        let Ok(bytes) = std::fs::read(path) else {
             return;
         };
         let file = crate::file::SrnxFile::parse(&bytes).expect("file parse");
@@ -787,7 +787,7 @@ mod tests {
             .join("..")
             .join("rnx-data")
             .join("abmf.srnx");
-        let Ok(bytes) = std::fs::read(&path) else {
+        let Ok(bytes) = std::fs::read(path) else {
             return;
         };
         let file = crate::file::SrnxFile::parse(&bytes).expect("file parse");
