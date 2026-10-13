@@ -877,7 +877,7 @@ mod tests {
         let Some(obs) = try_load_rinex2("sbst1200.26o") else {
             return;
         };
-        assert!(!obs.epochs.is_empty());
+        assert_ne!(obs.epochs, []);
         let num_epochs = obs.epochs.len();
         for series in obs.observations.values() {
             // Sparse series: epoch indices must be sorted and within range.

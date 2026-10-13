@@ -342,7 +342,7 @@ mod tests {
     fn empty_epoc() {
         let payload = enc_uleb(0);
         let e = parse(&payload, EpochChunkKind::Epoc).unwrap();
-        assert!(e.epochs.is_empty());
+        assert_eq!(e.epochs, []);
     }
 
     #[test]

@@ -221,7 +221,7 @@ mod tests {
         assert_eq!(chunks[0].payload, b"one");
         assert!(chunks[0].digest_ok);
         assert_eq!(&chunks[2].fourcc, b"CCCC");
-        assert!(chunks[2].payload.is_empty());
+        assert_eq!(chunks[2].payload, []);
     }
 
     #[test]

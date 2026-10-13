@@ -74,7 +74,7 @@ mod tests {
         let payload = b"\x00";
         let evtf = parse(payload).unwrap();
         assert_eq!(evtf.epoch_index, 0);
-        assert!(evtf.text.is_empty());
+        assert_eq!(evtf.text, [] as [String; 0]);
     }
 
     #[test]

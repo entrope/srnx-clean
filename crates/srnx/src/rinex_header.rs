@@ -1148,7 +1148,7 @@ mod tests {
         let h = parse(&rhdr).unwrap();
         assert_eq!(h.version.major, 2);
         // Just confirm we parse cleanly and have at least one obs code list.
-        assert!(!h.obs_codes.by_system.is_empty());
+        assert_ne!(h.obs_codes.by_system, []);
     }
 
     #[test]
@@ -1158,7 +1158,7 @@ mod tests {
         };
         let h = parse(&rhdr).unwrap();
         assert_eq!(h.version.major, 2);
-        assert!(!h.obs_codes.by_system.is_empty());
+        assert_ne!(h.obs_codes.by_system, []);
     }
 
     // ── HeaderText tests ─────────────────────────────────────────────────
@@ -1273,6 +1273,6 @@ mod tests {
         assert_eq!(h.get_line("MARKER NAME"), Some("AT01".to_string()));
         // Multiple COMMENT lines.
         let comments: Vec<String> = h.get_lines("COMMENT").collect();
-        assert!(!comments.is_empty());
+        assert_ne!(comments, [] as [String; 0]);
     }
 }

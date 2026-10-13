@@ -95,7 +95,7 @@ mod tests {
         let sdir = parse(&bytes).unwrap();
         assert_eq!(sdir.epoc_offset, 0);
         assert_eq!(sdir.evtf_offset, 0);
-        assert!(sdir.satellites.is_empty());
+        assert_eq!(sdir.satellites, []);
     }
 
     #[test]
