@@ -346,6 +346,7 @@ mod tests {
         evtf: usize,
         sate: usize,
         socd: usize,
+        soc2: usize,
     }
 
     fn check_counts(file: &SrnxFile<'_>, want: &Expected, name: &str) {
@@ -357,6 +358,7 @@ mod tests {
         assert_eq!(g(b"EVTF"), want.evtf, "{name}: EVTF count");
         assert_eq!(g(b"SATE"), want.sate, "{name}: SATE count");
         assert_eq!(g(b"SOCD"), want.socd, "{name}: SOCD count");
+        assert_eq!(g(b"SOC2"), want.soc2, "{name}: SOC2 count");
     }
 
     fn check_full(name: &str, want: &Expected) {
@@ -416,7 +418,8 @@ mod tests {
                 sdir: 1,
                 evtf: 0,
                 sate: 73,
-                socd: 705,
+                socd: 0,
+                soc2: 705,
             },
         );
     }

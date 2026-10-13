@@ -189,6 +189,9 @@ Equality compares the normalized model, not byte-level file contents.
 
 ## Estimated total: ~8–10 working days to MVP
 
-Post-MVP candidates (not in this plan): SRNX writer, full RINEX v3/v4
-reader, Hatanaka decoder, streaming / mmap-friendly chunked iteration,
-Python bindings.
+Post-MVP candidates (not in this plan): SRNX writer, Hatanaka decoder,
+streaming / mmap-friendly chunked iteration, Python bindings.
+
+Done after MVP: RINEX v3/v4 observation reader (`rinex3_obs.rs`, covering
+3.00–4.02 including the 4.02 picosecond epoch extension), wired into
+`srnx-diff`.

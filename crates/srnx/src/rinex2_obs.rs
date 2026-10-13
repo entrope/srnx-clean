@@ -24,10 +24,15 @@
 //! second (or more) 80-char line.  Lines shorter than the full 80 chars
 //! have been right-truncated; treat missing characters as spaces.
 //!
-//! ### Event records (epoch flag 2–6)
+//! ### Event records (epoch flag 2–5)
 //!
 //! The "number of satellites" field instead gives the number of verbatim
 //! lines that follow the epoch header.
+//!
+//! ### Power-failure and cycle-slip records (epoch flags 1 and 6)
+//!
+//! Same layout as a flag-0 epoch.  As in SRNX (which stores them only in
+//! `EVTF`), they become events rather than observation epochs.
 
 use std::collections::BTreeMap;
 
@@ -73,7 +78,7 @@ pub fn parse(input: &[u8]) -> Result<ObsFile, Rinex2Error> {
         .iter()
         .position(|l| {
             let trimmed = if l.len() >= 60 {
-                l[60..].trim()
+                l.get(60..).unwrap_or("").trim()
             } else {
                 l.trim()
             };
@@ -128,6 +133,8 @@ pub fn parse(input: &[u8]) -> Result<ObsFile, Rinex2Error> {
             continue;
         };
         pos += 1;
+        // Lines after the epoch header: continuation lines and/or records.
+        let body_start = pos;
 
         // Epoch flags 2–5: event record.  The num_entries field is the count of
         // verbatim special-record lines that follow; there is NO satellite PRN
@@ -266,10 +273,22 @@ pub fn parse(input: &[u8]) -> Result<ObsFile, Rinex2Error> {
 
         // --- Valid epoch — parse observations ---
 
-        // Flag 6 (cycle-slip record): same obs format as flags 0/1, but we
-        // discard the observations and do not add an epoch entry.
-        if flag == 6 {
+        // Flags 1 (power failure) and 6 (cycle slip) share the observation
+        // layout, but SRNX keeps such records only in EVTF, never as an
+        // observation epoch.  Keep them as an event (continuation and
+        // observation lines), not in `epochs` / `observations`.
+        if flag == 1 || flag == 6 {
             pos += obs_lines_total;
+            events.push((
+                epochs.len(),
+                EventRecord {
+                    flag,
+                    lines: data_lines[body_start..pos]
+                        .iter()
+                        .map(|l| (*l).to_string())
+                        .collect(),
+                },
+            ));
             // Skip any extra lines between epochs.
             if let Some(target) = skip_extra_to {
                 pos = target;
@@ -277,7 +296,7 @@ pub fn parse(input: &[u8]) -> Result<ObsFile, Rinex2Error> {
             continue;
         }
 
-        // Normal epoch (flag 0 or 1): parse observation records.
+        // Normal epoch (flag 0): parse observation records.
         let epoch_idx = epochs.len();
         epochs.push(epoch_rec);
 
@@ -343,7 +362,7 @@ fn is_any_header_line(line: &str) -> bool {
 /// Continuation lines start with 32 spaces then a letter (system id).
 fn is_continuation_line(line: &str) -> bool {
     line.len() > 32
-        && line[..32].chars().all(|c| c == ' ')
+        && line.as_bytes()[..32].iter().all(|&b| b == b' ')
         && line
             .as_bytes()
             .get(32)
@@ -353,7 +372,7 @@ fn is_continuation_line(line: &str) -> bool {
 /// Return a character at byte offset `i` in `line`, or `b' '` if the line is
 /// shorter.  RINEX v2 lines may have trailing whitespace stripped by writers.
 #[inline]
-fn byte_at(line: &str, i: usize) -> u8 {
+pub(crate) fn byte_at(line: &str, i: usize) -> u8 {
     line.as_bytes().get(i).copied().unwrap_or(b' ')
 }
 
@@ -442,7 +461,7 @@ fn parse_epoch_header(line: &str, line_no: usize) -> Result<(EpochRecord, u8, us
         .map_err(|_| Rinex2Error::BadEpochHeader(line_no))?;
 
     // Seconds: F11.7 at positions 15-25.  Parse as f64 then convert to e7.
-    let sec_str = &line[15..line.len().min(26)];
+    let sec_str = line.get(15..line.len().min(26)).unwrap_or("");
     let sec_f64: f64 = sec_str.trim().parse().unwrap_or(0.0);
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let seconds_e7 = (sec_f64 * 1e7).round() as u64;
@@ -476,7 +495,7 @@ fn parse_epoch_header(line: &str, line_no: usize) -> Result<(EpochRecord, u8, us
 
     // Receiver clock offset: F12.9 at positions 68-79.
     let clock_offset_e12 = if line.len() > 68 {
-        let clk_str = &line[68..line.len().min(80)];
+        let clk_str = line.get(68..line.len().min(80)).unwrap_or("");
         let clk_f64: f64 = clk_str.trim().parse().unwrap_or(0.0);
         #[allow(clippy::cast_possible_truncation)]
         let raw = (clk_f64 * 1e12).round() as i64;
@@ -492,6 +511,7 @@ fn parse_epoch_header(line: &str, line_no: usize) -> Result<(EpochRecord, u8, us
         hour,
         minute,
         seconds_e7,
+        extra_ps: 0,
         flag,
         clock_offset_e12,
     };
@@ -543,33 +563,38 @@ fn collect_sats(line: &str, sats: &mut Vec<SatId>) {
 /// Parse one observation field from `line` at the given slot (0–4).
 ///
 /// Each slot is 16 bytes: 14-byte F14.3 value + 1-byte LLI + 1-byte SSI.
-/// Returns `None` if the value field is entirely blank (absent observation).
+/// Returns `None` for an absent observation (see [`parse_obs_at`]).
+fn parse_obs_field(line: &str, slot: usize) -> Option<Obs> {
+    parse_obs_at(line, slot * 16)
+}
+
+/// Parse the 16-byte `F14.3, I1, I1` observation field starting at byte
+/// offset `start`.  Shared with the RINEX v3/v4 reader, whose fields follow
+/// a 3-byte satellite identifier.
+///
+/// Returns `None` if the value is blank or zero: every RINEX version says
+/// "missing observations are written as 0.0 or blanks", and `rnx2srnx`
+/// likewise stores a zero value as absent (dropping any LLI/SSI with it).
 ///
 /// F14.3 values have exactly 3 decimal places.  We parse them directly as
 /// integers by skipping the decimal point — no `String` allocation and no
 /// `f64` round-trip.
-fn parse_obs_field(line: &str, slot: usize) -> Option<Obs> {
-    let start = slot * 16;
-
+pub(crate) fn parse_obs_at(line: &str, start: usize) -> Option<Obs> {
     // Parse the 14-byte F14.3 value field as an integer (×1000 milliunits).
     let mut acc: i64 = 0;
     let mut negative = false;
-    let mut any_digit = false;
 
     for i in 0..14 {
         let b = byte_at(line, start + i);
         match b {
             b'-' => negative = true,
-            b'0'..=b'9' => {
-                acc = acc * 10 + i64::from(b - b'0');
-                any_digit = true;
-            }
+            b'0'..=b'9' => acc = acc * 10 + i64::from(b - b'0'),
             b'.' | b' ' | b'+' => {}
             _ => return None, // unexpected character → treat as absent
         }
     }
 
-    if !any_digit {
+    if acc == 0 {
         return None;
     }
 
@@ -642,6 +667,14 @@ mod tests {
     }
 
     #[test]
+    fn parse_obs_field_zero_is_absent() {
+        // "Missing observations are written as 0.0 or blanks."
+        let line = "         0.000 7          -.000  ";
+        assert!(parse_obs_field(line, 0).is_none());
+        assert!(parse_obs_field(line, 1).is_none());
+    }
+
+    #[test]
     fn parse_obs_field_short_line() {
         // Line shorter than 80 chars: missing fields treated as blank.
         let line = "        35.250";
@@ -686,6 +719,36 @@ mod tests {
         assert_eq!(sats.len(), 12);
         assert_eq!(sats[0], SatId::new(SatSystem::GPS, 20));
         assert_eq!(sats[11], SatId::new(SatSystem::GALILEO, 3));
+    }
+
+    #[test]
+    fn flag1_and_flag6_records_are_events() {
+        let text = include_str!("../tests/data/rinex211_flag1_flag6.rnx");
+        let f = parse(text.as_bytes()).unwrap();
+
+        // Only the two flag-0 epochs are observation epochs.
+        let secs: Vec<u64> = f.epochs.iter().map(|e| e.seconds_e7).collect();
+        assert_eq!(secs, vec![0, 20_000_000]);
+        assert!(f.epochs.iter().all(|e| e.flag == 0));
+
+        // Flag 1 (with a satellite continuation line) and flag 6 are kept as
+        // events positioned between the two epochs.
+        let events: Vec<(usize, u8, usize)> = f
+            .events
+            .iter()
+            .map(|(i, e)| (*i, e.flag, e.lines.len()))
+            .collect();
+        assert_eq!(events, vec![(1, 1, 14), (1, 6, 1)]);
+        assert_eq!(f.events[0].1.lines[0].trim(), "G13");
+
+        // The flag-1 values are not observations; G03..G13 appear only there.
+        let g01_c1 = &f.observations[&(
+            SatId::new(SatSystem::GPS, 1),
+            ObsCode::from_v2("C1").unwrap(),
+        )];
+        let got: Vec<(usize, i64)> = g01_c1.iter().map(|&(i, o)| (i, o.value)).collect();
+        assert_eq!(got, vec![(0, 20_001_000_000), (1, 20_001_002_000)]);
+        assert!(f.observations.keys().all(|(s, _)| s.prn <= 2));
     }
 
     // ---- fixture tests -----------------------------------------------

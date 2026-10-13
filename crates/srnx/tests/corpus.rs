@@ -5,7 +5,7 @@
 //!      scale / delta-order / block-header histograms, compare against the
 //!      `srnx_scan` reference tool output.  Tests are skipped gracefully when
 //!      either the fixture or `srnx_scan` is unavailable.
-//!   2. Round-trip semantics — for each RINEX v2 / SRNX file pair, parse
+//!   2. Round-trip semantics — for each RINEX / SRNX file pair, parse
 //!      both with our readers and assert `srnx-diff`-style equality.
 //!   3. Digest-corruption negatives — flip bits in file regions covered by
 //!      CRC32C and verify the mismatch is reported.
@@ -18,6 +18,7 @@ use std::path::PathBuf;
 use srnx::diff;
 use srnx::file::SrnxFile;
 use srnx::rinex2_obs;
+use srnx::rinex3_obs;
 use srnx::socd;
 use srnx::srnx_reader;
 
@@ -445,6 +446,90 @@ fn dynamic_round_trip_n3021830() {
         diffs.len(),
         diffs.join("\n")
     );
+}
+
+/// Run `rnx2srnx` on a RINEX v3 file, then compare the generated SRNX against
+/// our RINEX v3/v4 reader.  Skipped if the fixture or `rnx2srnx` is missing.
+fn dynamic_round_trip_v3(name: &str) {
+    let rnx_path = rnx_data(name);
+    let Ok(rnx_b) = std::fs::read(&rnx_path) else {
+        eprintln!("skip dynamic_round_trip_v3: {name} not found");
+        return;
+    };
+    let tmp = std::env::temp_dir().join(format!("srnx_corpus_test_{name}.srnx"));
+    match std::process::Command::new("rnx2srnx")
+        .arg(&rnx_path)
+        .arg(&tmp)
+        .status()
+    {
+        Ok(s) if s.success() => {}
+        Ok(s) => {
+            let _ = std::fs::remove_file(&tmp);
+            panic!("rnx2srnx {name} exited with {s}");
+        }
+        Err(_) => {
+            eprintln!("skip dynamic_round_trip_v3: rnx2srnx not available");
+            return;
+        }
+    }
+    let srnx_b = std::fs::read(&tmp).expect("read temp srnx");
+    let _ = std::fs::remove_file(&tmp);
+
+    let rnx = rinex3_obs::parse(&rnx_b).unwrap_or_else(|e| panic!("{name}: {e}"));
+    let srnx = srnx_reader::read(&srnx_b).expect("parse generated SRNX");
+    assert!(!rnx.observations.is_empty(), "{name}: no observations");
+    let diffs = compare_obs_files(&rnx, &srnx, name, "rnx2srnx-output");
+    assert!(
+        diffs.is_empty(),
+        "dynamic round-trip {name}: {} diff(s):\n{}",
+        diffs.len(),
+        diffs.join("\n")
+    );
+}
+
+#[test]
+fn dynamic_round_trip_twtf_v302() {
+    dynamic_round_trip_v3("TWTF00TWN_R_20201890000_01D_30S_MO.rnx");
+}
+
+#[test]
+fn dynamic_round_trip_abmf_v304() {
+    dynamic_round_trip_v3("abmf.rnx");
+}
+
+/// Flag-1 and flag-6 records must be EVTF-only in SRNX and events in our
+/// RINEX v2 reader, so both sides agree on the observation epochs.
+#[test]
+fn dynamic_round_trip_v2_flag1_flag6() {
+    let rnx_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("data")
+        .join("rinex211_flag1_flag6.rnx");
+    let tmp = std::env::temp_dir().join(format!(
+        "srnx_corpus_test_flag1_flag6_{}.srnx",
+        std::process::id()
+    ));
+    match std::process::Command::new("rnx2srnx")
+        .arg(&rnx_path)
+        .arg(&tmp)
+        .status()
+    {
+        Ok(s) if s.success() => {}
+        Ok(s) => panic!("rnx2srnx exited with {s}"),
+        Err(_) => {
+            eprintln!("skip dynamic_round_trip_v2_flag1_flag6: rnx2srnx not available");
+            return;
+        }
+    }
+    let srnx_b = std::fs::read(&tmp).expect("read temp srnx");
+    let _ = std::fs::remove_file(&tmp);
+
+    let rnx = rinex2_obs::parse(&std::fs::read(&rnx_path).unwrap()).expect("parse RINEX v2");
+    let srnx = srnx_reader::read(&srnx_b).expect("parse generated SRNX");
+    assert_eq!(rnx.epochs.len(), 2);
+    assert_eq!(rnx.events.len(), srnx.events.len());
+    let diffs = compare_obs_files(&rnx, &srnx, "rinex211_flag1_flag6.rnx", "rnx2srnx-output");
+    assert!(diffs.is_empty(), "{}", diffs.join("\n"));
 }
 
 // ── Negative tests: digest corruption ────────────────────────────────────────

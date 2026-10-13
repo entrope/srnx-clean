@@ -28,7 +28,7 @@ use thiserror::Error;
 /// label is cols 61–80 (trailing whitespace trimmed).  Returns `None` for
 /// lines shorter than 60 characters.
 fn split_label(line: &str) -> Option<(&str, &str)> {
-    if line.len() < 60 {
+    if line.len() < 60 || !line.is_char_boundary(60) {
         return None;
     }
     let (content, label_field) = line.split_at(60);
@@ -355,6 +355,31 @@ const LABEL_LEAP: &str = "LEAP SECONDS";
 const LABEL_WAVELEN: &str = "WAVELENGTH FACT L1/2";
 const LABEL_END: &str = "END OF HEADER";
 
+/// Read the format version from the `RINEX VERSION / TYPE` record without
+/// parsing the rest of the header.  Returns `None` if no such record appears
+/// before `END OF HEADER` or its version field is unreadable.
+#[must_use]
+pub fn sniff_version(bytes: &[u8]) -> Option<Version> {
+    for line in bytes.split(|&b| b == b'\n') {
+        let label = line.get(60..).unwrap_or_default();
+        let label = std::str::from_utf8(label).unwrap_or_default().trim_end();
+        if label == LABEL_END {
+            break;
+        }
+        if label != LABEL_VERSION {
+            continue;
+        }
+        let field = std::str::from_utf8(line.get(..9)?).ok()?.trim();
+        let (major, minor) = field.split_once('.').unwrap_or((field, ""));
+        let digits: String = minor.chars().take_while(char::is_ascii_digit).collect();
+        return Some(Version {
+            major: major.parse().ok()?,
+            minor: digits.parse().unwrap_or(0),
+        });
+    }
+    None
+}
+
 #[doc(hidden)]
 pub fn parse(bytes: &[u8]) -> Result<Header, HeaderError> {
     let text = std::str::from_utf8(bytes).map_err(|_| HeaderError::NotUtf8)?;
@@ -364,6 +389,18 @@ pub fn parse(bytes: &[u8]) -> Result<Header, HeaderError> {
     for raw_line in text.lines() {
         // Tolerate lingering CR.
         let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
+        // Fixed-column slicing below assumes one byte per column; map any
+        // non-ASCII character (e.g. in a COMMENT) to a single placeholder.
+        let ascii;
+        let line = if line.is_ascii() {
+            line
+        } else {
+            ascii = line
+                .chars()
+                .map(|c| if c.is_ascii() { c } else { '?' })
+                .collect::<String>();
+            ascii.as_str()
+        };
         let Some((content, label)) = split_label(line) else {
             // Lines shorter than 60 chars can only be the END OF HEADER
             // sentinel in degenerate inputs; skip silently otherwise.
@@ -911,6 +948,24 @@ mod tests {
                 actual: 2
             }
         ));
+    }
+
+    #[test]
+    fn sniffs_version() {
+        let v = |first: &str| {
+            let text = build(&[
+                &line(first, "RINEX VERSION / TYPE"),
+                &line("", "END OF HEADER"),
+            ]);
+            sniff_version(text.as_bytes())
+        };
+        let want = |major, minor| Some(Version { major, minor });
+        assert_eq!(v("     2.11           OBSERVATION DATA    M"), want(2, 11));
+        assert_eq!(v("     3.05           OBSERVATION DATA    M"), want(3, 5));
+        assert_eq!(v("     4.02           OBSERVATION DATA    M"), want(4, 2));
+        assert_eq!(v("   junk"), None);
+        assert_eq!(sniff_version(b"SRNX\x01"), None);
+        assert_eq!(sniff_version(&[0xff; 200]), None);
     }
 
     #[test]

@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Semantic comparison CLI for SRNX and RINEX v2 observation files"
+description = "Semantic comparison CLI for SRNX and RINEX observation files"
 
 [[bin]]
 name = "srnx-diff"

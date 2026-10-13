@@ -325,7 +325,9 @@ mod tests {
         assert_eq!(counts.get(b"EPOC").copied(), Some(1));
         assert_eq!(counts.get(b"SDIR").copied(), Some(1));
         assert_eq!(counts.get(b"SATE").copied(), Some(73));
-        assert_eq!(counts.get(b"SOCD").copied(), Some(705));
+        // Revision 1.1 fixture: observation data is in SOC2, not SOCD.
+        assert_eq!(counts.get(b"SOC2").copied(), Some(705));
+        assert!(!counts.contains_key(b"SOCD"));
         // No event chunks in this fixture.
         assert!(!counts.contains_key(b"EVTF"));
     }

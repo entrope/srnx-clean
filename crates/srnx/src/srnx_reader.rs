@@ -191,6 +191,7 @@ fn epoch_to_record(e: &Epoch) -> EpochRecord {
         hour: e.hour,
         minute: e.minute,
         seconds_e7: e.seconds_e7,
+        extra_ps: 0,
         flag: 0,
         clock_offset_e12: e.clock_offset_e12,
     }

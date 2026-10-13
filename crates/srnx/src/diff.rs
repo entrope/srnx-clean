@@ -7,6 +7,7 @@
 //! tests so the comparison logic lives in exactly one place.
 
 use std::collections::BTreeSet;
+use std::fmt::Write;
 
 use crate::model::{EpochRecord, Obs, ObsFile};
 
@@ -14,15 +15,20 @@ use crate::model::{EpochRecord, Obs, ObsFile};
 // Public helpers (also useful standalone)
 // ---------------------------------------------------------------------------
 
-/// Format an epoch record as an ISO-like timestamp string.
+/// Format an epoch record as an ISO-like timestamp string.  Picosecond
+/// digits (RINEX 4.02) are appended only when nonzero.
 #[must_use]
 pub fn fmt_epoch(e: &EpochRecord) -> String {
     let whole = e.seconds_e7 / 10_000_000;
     let frac = e.seconds_e7 % 10_000_000;
-    format!(
+    let mut out = format!(
         "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:07}",
         e.year, e.month, e.day, e.hour, e.minute, whole, frac
-    )
+    );
+    if e.extra_ps != 0 {
+        let _ = write!(out, "{:05}", e.extra_ps);
+    }
+    out
 }
 
 /// Compare two epoch records on timestamp fields only (ignores flag and
@@ -35,6 +41,7 @@ pub fn epochs_eq(a: &EpochRecord, b: &EpochRecord) -> bool {
         && a.hour == b.hour
         && a.minute == b.minute
         && a.seconds_e7 == b.seconds_e7
+        && a.extra_ps == b.extra_ps
 }
 
 /// Treat `b'0'` and `b' '` as equivalent (both mean "no information").
@@ -257,10 +264,17 @@ mod tests {
             hour: 0,
             minute: 0,
             seconds_e7: 0,
+            extra_ps: 0,
             flag: 0,
             clock_offset_e12: 0,
         };
         assert_eq!(fmt_epoch(&e), "2020-07-18 00:00:00.0000000");
+        let e = EpochRecord {
+            seconds_e7: 361_234_567,
+            extra_ps: 1_234,
+            ..e
+        };
+        assert_eq!(fmt_epoch(&e), "2020-07-18 00:00:36.123456701234");
     }
 
     #[test]

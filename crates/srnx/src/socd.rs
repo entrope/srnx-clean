@@ -756,23 +756,53 @@ mod tests {
         );
     }
 
-    #[test]
-    fn fixture_at012000_all_socd_chunks_parse() {
-        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    /// Encode `rnx-data/<source>` with `rnx2srnx --socd` so the SOCD decoder
+    /// is exercised; the nominal `.srnx` fixtures use revision 1.1 SOC2.
+    /// Returns `None` (skipping the test) if the source or encoder is absent.
+    fn socd_fixture(source: &str) -> Option<Vec<u8>> {
+        let input = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("..")
             .join("rnx-data")
-            .join("at012000.srnx");
-        let Ok(bytes) = std::fs::read(path) else {
+            .join(source);
+        if !input.exists() {
+            eprintln!("skipping SOCD fixture test: {source} unavailable");
+            return None;
+        }
+        let output = std::env::temp_dir().join(format!(
+            "srnx-socd-test-{}-{source}.srnx",
+            std::process::id()
+        ));
+        let Ok(status) = std::process::Command::new("rnx2srnx")
+            .arg("--socd")
+            .arg(&input)
+            .arg(&output)
+            .status()
+        else {
+            eprintln!("skipping SOCD fixture test: rnx2srnx unavailable");
+            return None;
+        };
+        assert!(status.success(), "rnx2srnx --socd {source}: {status}");
+        let bytes = std::fs::read(&output).expect("read SOCD fixture");
+        let _ = std::fs::remove_file(&output);
+        Some(bytes)
+    }
+
+    #[test]
+    fn fixture_at012000_all_socd_chunks_parse() {
+        let Some(bytes) = socd_fixture("at012000.20o") else {
             return;
         };
         let file = crate::file::SrnxFile::parse(&bytes).expect("file parse");
+        let mut chunks = 0_usize;
         let mut total_values: usize = 0;
         for chunk in file.chunks.iter().filter(|c| c.fourcc == *b"SOCD") {
             let socd = parse(chunk.payload)
                 .unwrap_or_else(|e| panic!("SOCD at offset {} failed: {e}", chunk.file_offset));
+            chunks += 1;
             total_values += socd.values.len();
         }
+        assert_eq!(chunks, 705);
         // Sanity: total decoded values across all 705 SOCDs.
         assert!(
             total_values > 1_000_000,
@@ -782,18 +812,16 @@ mod tests {
 
     #[test]
     fn fixture_abmf_all_socd_parse() {
-        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("rnx-data")
-            .join("abmf.srnx");
-        let Ok(bytes) = std::fs::read(path) else {
+        let Some(bytes) = socd_fixture("abmf.rnx") else {
             return;
         };
         let file = crate::file::SrnxFile::parse(&bytes).expect("file parse");
+        let mut chunks = 0_usize;
         for chunk in file.chunks.iter().filter(|c| c.fourcc == *b"SOCD") {
             parse(chunk.payload)
                 .unwrap_or_else(|e| panic!("SOCD at {} failed: {e}", chunk.file_offset));
+            chunks += 1;
         }
+        assert!(chunks > 0, "abmf --socd produced no SOCD chunks");
     }
 }

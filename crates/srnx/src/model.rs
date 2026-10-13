@@ -1,4 +1,4 @@
-//! Shared semantic model populated by both the SRNX and RINEX v2 readers.
+//! Shared semantic model populated by the SRNX and RINEX text readers.
 //!
 //! Both formats express the same data — satellite observations per epoch —
 //! but encode it very differently.  This module provides the canonical
@@ -55,13 +55,20 @@ pub struct EpochRecord {
     pub minute: u8,
     /// Seconds within the minute as `s × 10⁷`.
     pub seconds_e7: u64,
+    /// Additional picoseconds beyond `seconds_e7` (0–99 999), from the
+    /// optional five-digit epoch extension introduced in RINEX 4.02.  Always
+    /// zero for RINEX v2 and SRNX, whose epochs have 10⁻⁷ s resolution.
+    pub extra_ps: u32,
     /// Epoch flag: 0 = OK, 1 = power failure, 2–5 = event, 6 = cycle slips.
     pub flag: u8,
     /// Receiver clock offset as `value × 10¹²`.  Zero if not supplied.
     pub clock_offset_e12: i64,
 }
 
-/// Raw text lines accompanying a special-event epoch record (flag 2–6).
+/// Raw text lines accompanying a special-event epoch record (flag 1–6).
+///
+/// For flags 1 and 6 these are the record's satellite continuation lines
+/// (RINEX v2) and observation / cycle-slip lines.
 #[derive(Debug, Clone)]
 pub struct EventRecord {
     pub flag: u8,
@@ -71,7 +78,8 @@ pub struct EventRecord {
 
 /// Normalized in-memory representation of a RINEX observation file.
 ///
-/// Both the SRNX reader and the RINEX v2 text reader populate this struct.
+/// The SRNX reader and the RINEX v2 and v3/v4 text readers populate this
+/// struct.
 /// The observations map is indexed by `(SatId, ObsCode)`.  Each value is a
 /// sorted `Vec<(usize, Obs)>` of `(epoch_index, observation)` pairs.  Only
 /// epochs where the observation is present are listed; absent epochs have no
@@ -80,7 +88,8 @@ pub struct ObsFile {
     /// RINEX header as raw text with label-based query helpers.
     /// Normalized to LF newlines.
     pub header: HeaderText,
-    /// Observation epochs in file order (flag 0 or 1 records only).
+    /// Observation epochs in file order (flag-0 records only; flag-1 and
+    /// flag-6 records are events, as in SRNX).
     pub epochs: Vec<EpochRecord>,
     /// Special event records with their position (index into `epochs` of the
     /// epoch immediately following the event; equal to `epochs.len()` if the

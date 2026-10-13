@@ -1,4 +1,5 @@
-//! Clean-room reader for the Succinct RINEX (SRNX) and RINEX v2 file formats.
+//! Clean-room reader for the Succinct RINEX (SRNX) format and RINEX v2, v3
+//! and v4 observation files.
 //!
 //! See `CLAUDE.md` and `PLAN.md` at the workspace root for scope and roadmap.
 
@@ -12,6 +13,7 @@ pub mod file;
 pub mod leb128;
 pub mod model;
 pub mod rinex2_obs;
+pub mod rinex3_obs;
 pub mod rinex_header;
 pub mod sate;
 pub mod sdir;

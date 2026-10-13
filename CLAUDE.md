@@ -1,8 +1,8 @@
 # srnx-clean
 
-Clean-room Rust implementation of a **Succinct RINEX (SRNX)** reader, plus a
-RINEX v2 reader, plus a utility to compare two files (SRNX or RINEX v2) for
-semantic equivalence.
+Clean-room Rust implementation of a **Succinct RINEX (SRNX)** reader, plus
+RINEX v2 and v3/v4 observation readers, plus a utility to compare two files
+(SRNX or RINEX) for semantic equivalence.
 
 ## Clean-room rule
 
@@ -25,11 +25,14 @@ user instead of looking.
   - [docs/Succinct_RINEX.md](docs/Succinct_RINEX.md) — SRNX spec, revision 1.
   - [docs/rinex211.txt](docs/rinex211.txt) — RINEX v2.11 spec.
   - [docs/rinex_4.02.pdf](docs/rinex_4.02.pdf) — RINEX v4.02 spec (v3 is a
-    subset, modulo the version field).
+    subset, modulo the version field). Earlier v3.0x/v4.0x specs are not in
+    the repo; ask the user if a version-specific detail matters.
 - [rnx-data/](rnx-data/) — sample inputs (symlink to `../rnx-data`). Mix of
   `.rnx` (RINEX v2/v3), `.20o`/`.26o` (RINEX v2 obs), `.crx` (Hatanaka), and
-  `.srnx` files. The `.srnx` files were produced by `rnx2srnx` from the
-  matching `.rnx`/`.20o` source.
+  `.srnx` files. The `.srnx` files were produced by `rnx2srnx` (default
+  options, so revision 1.1 / SOC2) from the matching `.rnx`/`.2?o` source,
+  or `.22d` Hatanaka source, which `rnx2srnx` reads directly. Tests that
+  need revision 1.0 SOCD chunks generate them with `rnx2srnx --socd`.
 - `PLAN.md` — implementation plan and milestone tracking.
 
 The Rust workspace will live at the repo root once bootstrapped (see PLAN.md).
@@ -87,6 +90,23 @@ These are easy to miss on a first read of `docs/Succinct_RINEX.md`:
 - Receiver clock offsets in `EPOC` are RLE'd as `(SLEB128 value × 1e12,
   ULEB128 count - 1)`. Trailing zeros may be omitted.
 
+RINEX text-format gotchas (all versions unless noted):
+
+- "Missing observations are written as 0.0 or blanks": a value of exactly
+  zero is absent, and `rnx2srnx` drops it (with its LLI/SSI). The shared
+  F14.3 field parser in `rinex2_obs.rs` treats zero as absent for v2 and v3.
+- SRNX keeps flag-1 (power failure) and flag-6 (cycle slip) records only in
+  `EVTF`, never in `EPOC`/`SATE`/`SOCD`/`SOC2`. Both RINEX readers turn them
+  into events, not observation epochs.
+- RINEX 4.02 epoch records may end with `1X,I5.5`: five more digits of
+  seconds (picoseconds), with the `F11.7` seconds floored. It's stored as
+  `EpochRecord::extra_ps`. SRNX `EPOC` has only 1e-7 s resolution, and
+  `rnx2srnx` rejects such files ("clock offset has bad format").
+  `crates/srnx/tests/data/rinex402_picoseconds.rnx` exercises this.
+- v3/v4 observation records are one line per satellite with no 80-column
+  limit. Within an epoch, `srnx2rnx` sorts satellites, so line order is not
+  semantic.
+
 ## Development conventions
 
 - Rust edition 2021, stable toolchain. MSRV: 1.75 (`rust-version` in
@@ -120,7 +140,5 @@ These are easy to miss on a first read of `docs/Succinct_RINEX.md`:
 ## Out of scope for MVP
 
 - Writing SRNX (encoder).
-- RINEX v3/v4 reader (we only need enough header parsing to read v3 RHDRs
-  embedded in SRNX; full v3 obs parsing is post-MVP).
 - Hatanaka (`.crx`) compression.
 - Streaming/async APIs — MVP is mmap or full read into memory.

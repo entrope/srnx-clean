@@ -6,6 +6,7 @@ use srnx::epoc;
 use srnx::file::SrnxFile;
 use srnx::model::ObsFile;
 use srnx::rinex2_obs;
+use srnx::rinex3_obs;
 use srnx::rinex_header;
 use srnx::srnx_reader;
 
@@ -41,11 +42,12 @@ fn usage() -> ExitCode {
 }
 
 fn print_help() {
-    println!("srnx-diff: semantic comparator and inspector for SRNX / RINEX v2 observation files");
+    println!("srnx-diff: semantic comparator and inspector for SRNX / RINEX observation files");
     println!();
     println!("USAGE");
     println!("  srnx-diff [--quiet] <file-a> <file-b>");
-    println!("      Compare two files (any combination of .srnx and RINEX v2 .rnx/.20o/.26o).");
+    println!("      Compare two files (any combination of .srnx and RINEX v2, v3 or v4");
+    println!("      observation files; the RINEX version is read from the header).");
     println!("      Exits 0 if files are semantically equivalent, 1 if they differ.");
     println!("      --quiet: suppress diff output (for CI pipelines).");
     println!();
@@ -76,6 +78,7 @@ fn run(r: Result<(), Box<dyn std::error::Error>>) -> ExitCode {
 enum FileFormat {
     Srnx,
     Rinex2,
+    Rinex3,
 }
 
 fn detect_format(path: &str, bytes: &[u8]) -> FileFormat {
@@ -88,7 +91,10 @@ fn detect_format(path: &str, bytes: &[u8]) -> FileFormat {
     {
         return FileFormat::Srnx;
     }
-    FileFormat::Rinex2
+    match rinex_header::sniff_version(bytes) {
+        Some(v) if v.is_v3_or_later() => FileFormat::Rinex3,
+        _ => FileFormat::Rinex2,
+    }
 }
 
 fn load_obs_file(path: &str) -> Result<ObsFile, Box<dyn std::error::Error>> {
@@ -96,6 +102,7 @@ fn load_obs_file(path: &str) -> Result<ObsFile, Box<dyn std::error::Error>> {
     match detect_format(path, &bytes) {
         FileFormat::Srnx => Ok(srnx_reader::read(&bytes)?),
         FileFormat::Rinex2 => Ok(rinex2_obs::parse(&bytes)?),
+        FileFormat::Rinex3 => Ok(rinex3_obs::parse(&bytes)?),
     }
 }
 
