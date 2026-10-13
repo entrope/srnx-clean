@@ -195,3 +195,6 @@ streaming / mmap-friendly chunked iteration, Python bindings.
 Done after MVP: RINEX v3/v4 observation reader (`rinex3_obs.rs`, covering
 3.00–4.02 including the 4.02 picosecond epoch extension), wired into
 `srnx-diff`.
+
+SRNX revision 1.2: `EPO2` epoch chunk (picosecond epochs) in `epoc.rs`,
+with SOC2 rate predictors using the epoch chunk's time unit.

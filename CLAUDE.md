@@ -22,7 +22,7 @@ user instead of looking.
 ## Repository layout
 
 - [docs/](docs/) — format specifications (read-only references).
-  - [docs/Succinct_RINEX.md](docs/Succinct_RINEX.md) — SRNX spec, revision 1.
+  - [docs/Succinct_RINEX.md](docs/Succinct_RINEX.md) — SRNX spec, revision 1.2.
   - [docs/rinex211.txt](docs/rinex211.txt) — RINEX v2.11 spec.
   - [docs/rinex_4.02.pdf](docs/rinex_4.02.pdf) — RINEX v4.02 spec (v3 is a
     subset, modulo the version field). Earlier v3.0x/v4.0x specs are not in
@@ -63,6 +63,9 @@ These are easy to miss on a first read of `docs/Succinct_RINEX.md`:
 
 - Integers are **little-endian LEB128**. Signed values use ZigZag (SLEB128).
   `EPOC` interval is signed: negative = seconds, positive = seconds × 1e7.
+  `EPO2` (revision 1.2) is identical except positive intervals and the
+  time-of-day are in picoseconds (× 1e12), and SOC2 rate predictors use
+  that unit too. A file has at most one of `EPOC`/`EPO2`.
 - The `SRNX` chunk's payload may have **trailing padding** (so the SDIR offset
   can be patched in after the rest of the file is written). Read exactly the
   declared payload length; ignore extra bytes.
@@ -100,8 +103,9 @@ RINEX text-format gotchas (all versions unless noted):
   into events, not observation epochs.
 - RINEX 4.02 epoch records may end with `1X,I5.5`: five more digits of
   seconds (picoseconds), with the `F11.7` seconds floored. It's stored as
-  `EpochRecord::extra_ps`. SRNX `EPOC` has only 1e-7 s resolution, and
-  `rnx2srnx` rejects such files ("clock offset has bad format").
+  `EpochRecord::extra_ps`. `rnx2srnx` stores such files with an `EPO2`
+  chunk (SRNX minor version 2) instead of `EPOC`, and `srnx2rnx` then
+  writes the extra digits on every epoch (`00000` where absent).
   `crates/srnx/tests/data/rinex402_picoseconds.rnx` exercises this.
 - v3/v4 observation records are one line per satellite with no 80-column
   limit. Within an epoch, `srnx2rnx` sorts satellites, so line order is not

@@ -4,7 +4,7 @@
 //! followed by optional padding (which a reader MUST ignore):
 //!
 //! 1. major version (currently 1)
-//! 2. minor version (currently 1)
+//! 2. minor version (0, 1 with `SOC2`, or 2 with `EPO2`)
 //! 3. per-chunk digest identifier
 //! 4. file-level digest identifier
 //! 5. file offset of the `SDIR` chunk (0 if absent)
@@ -17,7 +17,7 @@ use crate::leb128::{read_uleb128, LebError};
 /// Highest major version this implementation understands.
 pub const SUPPORTED_MAJOR: u64 = 1;
 /// Highest supported minor version.
-pub const SUPPORTED_MINOR: u64 = 1;
+pub const SUPPORTED_MINOR: u64 = 2;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum SrnxHeaderError {
@@ -123,9 +123,10 @@ mod tests {
     #[test]
     fn minor_version_compatibility() {
         assert_eq!(parse(&[1, 1, 0, 0, 0]).unwrap().minor, 1);
+        assert_eq!(parse(&[1, 2, 0, 0, 0]).unwrap().minor, 2);
         assert_eq!(
-            parse(&[1, 2, 0, 0, 0]),
-            Err(SrnxHeaderError::UnsupportedMinor { minor: 2 })
+            parse(&[1, 3, 0, 0, 0]),
+            Err(SrnxHeaderError::UnsupportedMinor { minor: 3 })
         );
     }
 

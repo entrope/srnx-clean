@@ -299,6 +299,7 @@ fn prediction(
     k: usize,
     reference: &Socd,
     times: &[i128],
+    units_per_second: u64,
 ) -> Result<Option<i128>, Soc2Error> {
     let milli = |i: usize| {
         reference
@@ -307,9 +308,19 @@ fn prediction(
             .filter(|&&v| v != ABSENT)
             .map(|&v| i128::from(v) * i128::from(reference.scale))
     };
-    let (value, num, den) = match p {
+    let (numerator, den) = match p {
         Predictor::None => return Ok(None),
-        Predictor::Value { num, den, .. } => (milli(k), num, i128::from(den)),
+        Predictor::Value { num, den, .. } => {
+            let Some(value) = milli(k) else {
+                return Ok(None);
+            };
+            (
+                value
+                    .checked_mul(i128::from(num))
+                    .ok_or(Soc2Error::Overflow)?,
+                i128::from(den),
+            )
+        }
         Predictor::Rate {
             num,
             den,
@@ -333,22 +344,22 @@ fn prediction(
             let Some((a, b)) = milli(a).zip(milli(b)) else {
                 return Ok(None);
             };
+            // A numerator that does not fit in i128 makes the prediction
+            // unavailable rather than the chunk invalid.
+            let Some(numerator) = (b - a)
+                .checked_mul(i128::from(units_per_second))
+                .and_then(|d| d.checked_mul(i128::from(num)))
+            else {
+                return Ok(None);
+            };
             (
-                Some((b - a).checked_mul(10_000_000).ok_or(Soc2Error::Overflow)?),
-                num,
+                numerator,
                 span.checked_mul(i128::from(den))
                     .ok_or(Soc2Error::Overflow)?,
             )
         }
     };
-    value
-        .map(|v| {
-            rounded(
-                v.checked_mul(i128::from(num)).ok_or(Soc2Error::Overflow)?,
-                den,
-            )
-        })
-        .transpose()
+    rounded(numerator, den).map(Some)
 }
 
 /// A satellite's SOCD/SOC2 columns in RHDR order; `None` denotes a zero SATE offset.
@@ -368,11 +379,13 @@ impl Column {
 }
 
 /// Resolve a satellite's observation values and indicators. Times are continuous
-/// timestamps in units of 1e-7 seconds, one per satellite epoch.
+/// timestamps in units of `1 / units_per_second` seconds (the epoch chunk's
+/// time unit), one per satellite epoch.
 pub fn decode_satellite(
     columns: &[Option<Column>],
     codes: &[ObsCode],
     times: &[i128],
+    units_per_second: u64,
 ) -> Result<Vec<Option<Socd>>, Soc2Error> {
     if columns.len() != codes.len() {
         return Err(Soc2Error::Invalid("observation code count mismatch"));
@@ -380,7 +393,14 @@ pub fn decode_satellite(
     let mut decoded = vec![None; columns.len()];
     let mut visiting = vec![false; columns.len()];
     for i in 0..columns.len() {
-        resolve(i, columns, times, &mut decoded, &mut visiting)?;
+        resolve(
+            i,
+            columns,
+            times,
+            units_per_second,
+            &mut decoded,
+            &mut visiting,
+        )?;
     }
     // SSI depends only on values; resolve after all value columns, allowing SSI cycles.
     for (i, column) in columns.iter().enumerate() {
@@ -419,6 +439,7 @@ fn resolve(
     i: usize,
     columns: &[Option<Column>],
     times: &[i128],
+    units_per_second: u64,
     decoded: &mut [Option<Socd>],
     visiting: &mut [bool],
 ) -> Result<(), Soc2Error> {
@@ -463,7 +484,7 @@ fn resolve(
                 ));
             }
         }
-        resolve(j, columns, times, decoded, visiting)?;
+        resolve(j, columns, times, units_per_second, decoded, visiting)?;
         let reference = decoded[j].as_ref();
         let Column::Soc2(s) = column else {
             unreachable!()
@@ -473,7 +494,7 @@ fn resolve(
                 continue;
             }
             let p = reference
-                .map(|r| prediction(s.predictor, k, r, times))
+                .map(|r| prediction(s.predictor, k, r, times, units_per_second))
                 .transpose()?
                 .flatten();
             if s.unpredicted[k] != p.is_none() {
@@ -506,6 +527,10 @@ fn resolve(
 mod tests {
     use super::*;
     use crate::compat::cast_unsigned;
+
+    /// `EPOC` time unit; `EPO2` is [`U12`].
+    const U7: u64 = 10_000_000;
+    const U12: u64 = 1_000_000_000_000;
 
     fn uleb(mut v: u64) -> Vec<u8> {
         let mut out = Vec::new();
@@ -650,7 +675,7 @@ mod tests {
             ),
             Some(Column::Socd(data(&[6, -6, 2], 1))),
         ];
-        let out = decode_satellite(&columns, &codes(&["C1", "L1", "L2"]), &[0, 1, 2]).unwrap();
+        let out = decode_satellite(&columns, &codes(&["C1", "L1", "L2"]), &[0, 1, 2], U7).unwrap();
         assert_eq!(out[1].as_ref().unwrap().values, [3, -3, 1]);
         // First rounding: +/-3/2 -> +/-2; scale rounding: +/-2/2 -> +/-1.
         assert_eq!(out[0].as_ref().unwrap().values, [2, -2, 1]);
@@ -673,7 +698,7 @@ mod tests {
             Some(Column::Soc2(s)),
             Some(Column::Socd(data(&[ABSENT, 10, ABSENT, 20], 1))),
         ];
-        let out = decode_satellite(&columns, &codes(&["C1", "L1"]), &[0, 1, 2, 3]).unwrap();
+        let out = decode_satellite(&columns, &codes(&["C1", "L1"]), &[0, 1, 2, 3], U7).unwrap();
         assert_eq!(out[0].as_ref().unwrap().values, [100, 15, 200, 25]);
     }
 
@@ -694,7 +719,7 @@ mod tests {
                 max_span: 0,
             };
             for (k, exp) in expected.into_iter().enumerate() {
-                assert_eq!(prediction(p, k, &reference, &times).unwrap(), exp);
+                assert_eq!(prediction(p, k, &reference, &times, U7).unwrap(), exp);
             }
         }
         let p = Predictor::Rate {
@@ -704,12 +729,51 @@ mod tests {
             stencil: 0,
             max_span: 10_000_000,
         };
-        assert_eq!(prediction(p, 1, &reference, &times).unwrap(), Some(30));
-        assert_eq!(prediction(p, 2, &reference, &times).unwrap(), None);
+        assert_eq!(prediction(p, 1, &reference, &times, U7).unwrap(), Some(30));
+        assert_eq!(prediction(p, 2, &reference, &times, U7).unwrap(), None);
         let mut missing = reference.clone();
         missing.values[1] = ABSENT;
-        assert_eq!(prediction(p, 1, &missing, &times).unwrap(), None);
-        assert_eq!(prediction(p, 1, &reference, &[0, 0, 1, 2]).unwrap(), None);
+        assert_eq!(prediction(p, 1, &missing, &times, U7).unwrap(), None);
+        assert_eq!(
+            prediction(p, 1, &reference, &[0, 0, 1, 2], U7).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn rate_prediction_uses_epoch_chunk_time_unit() {
+        // Same 1 s and 2 s spans as `rate_stencils_…`, in EPO2 picoseconds.
+        let reference = data(&[0, 30, 90], 1);
+        let p = Predictor::Rate {
+            reference: 0,
+            num: 1,
+            den: 1,
+            stencil: 0,
+            max_span: 0,
+        };
+        let times = [0, 1_000_000_000_000, 3_000_000_000_000];
+        assert_eq!(prediction(p, 1, &reference, &times, U12).unwrap(), Some(30));
+        assert_eq!(prediction(p, 2, &reference, &times, U12).unwrap(), Some(30));
+    }
+
+    #[test]
+    fn rate_numerator_overflow_makes_prediction_unavailable() {
+        // (R[b] - R[a]) ≈ 2^93 milli-units: × 10^7 fits in i128, × 10^12 does not.
+        let reference = data(&[0, i64::MAX], 1_000_000_000);
+        let p = Predictor::Rate {
+            reference: 0,
+            num: 1,
+            den: 1,
+            stencil: 0,
+            max_span: 0,
+        };
+        assert!(prediction(p, 1, &reference, &[0, U7.into()], U7)
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            prediction(p, 1, &reference, &[0, U12.into()], U12).unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -729,6 +793,7 @@ mod tests {
             &[Some(Column::Soc2(s.clone())), reference],
             &codes(&["L1", "S1"]),
             &[0; 7],
+            U7,
         )
         .unwrap();
         assert_eq!(out[0].as_ref().unwrap().ssi, b"1111299");
@@ -738,7 +803,8 @@ mod tests {
                 Some(Column::Socd(data(&[ABSENT; 7], 1)))
             ],
             &codes(&["L1", "S1"]),
-            &[0; 7]
+            &[0; 7],
+            U7,
         )
         .is_err());
         let s = parse(&payload(3, 8, &[35], &[], &[0, 0xFE, 2])).unwrap();
@@ -775,7 +841,7 @@ mod tests {
             ],
         ] {
             let c = vec![ObsCode::from_v2("L1").unwrap(); columns.len()];
-            assert!(decode_satellite(&columns, &c, &[0]).is_err());
+            assert!(decode_satellite(&columns, &c, &[0], U7).is_err());
         }
     }
 
@@ -790,6 +856,7 @@ mod tests {
             &[column(&[50, 60], 1, p, &[true; 2]), None],
             &codes(&["C1", "L1"]),
             &[0, 1],
+            U7,
         )
         .unwrap();
         assert_eq!(out[0].as_ref().unwrap().values, [50, 60]);
@@ -811,6 +878,7 @@ mod tests {
             ],
             &codes(&["D1", "L1"]),
             &[0, 10_000_000, 30_000_000, 60_000_000],
+            U7,
         )
         .unwrap();
         assert_eq!(out[0].as_ref().unwrap().values, [100, -28, -27, 200]);
@@ -825,11 +893,14 @@ mod tests {
             den: cast_unsigned(i64::MAX),
         };
         assert_eq!(
-            prediction(p, 0, &reference, &[0]).unwrap(),
+            prediction(p, 0, &reference, &[0], U7).unwrap(),
             Some(i128::from(i64::MAX))
         );
         let reference = data(&[i64::MAX], 1_000_000_000);
-        assert_eq!(prediction(p, 0, &reference, &[0]), Err(Soc2Error::Overflow));
+        assert_eq!(
+            prediction(p, 0, &reference, &[0], U7),
+            Err(Soc2Error::Overflow)
+        );
         let columns = [
             column(
                 &[1],
@@ -844,7 +915,7 @@ mod tests {
             Some(Column::Socd(data(&[i64::MAX], 1))),
         ];
         assert!(matches!(
-            decode_satellite(&columns, &codes(&["C1", "L1"]), &[0]),
+            decode_satellite(&columns, &codes(&["C1", "L1"]), &[0], U7),
             Err(Soc2Error::Overflow)
         ));
     }
@@ -865,6 +936,7 @@ mod tests {
             &[Some(Column::Soc2(a)), Some(Column::Soc2(b))],
             &codes(&["S1", "S2"]),
             &[0],
+            U7,
         )
         .unwrap();
         assert_eq!(out[0].as_ref().unwrap().ssi, b"3");

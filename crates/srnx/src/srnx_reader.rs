@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use thiserror::Error;
 
-use crate::epoc::Epoch;
+use crate::epoc::{Epoch, EpochChunkKind};
 use crate::file::{FileError, SrnxFile};
 use crate::model::{EpochRecord, EventRecord, Obs, ObsFile, SatId};
 use crate::rinex_header::{self, Header, HeaderError, HeaderText, ObsCode, SatSystem};
@@ -25,8 +25,10 @@ pub enum SrnxReadError {
     NoRhdr,
     #[error("no SDIR chunk in SRNX file")]
     NoSdir,
-    #[error("no EPOC chunk in SRNX file")]
+    #[error("no EPOC or EPO2 chunk in SRNX file")]
     NoEpoc,
+    #[error("EPO2 chunk spans 2^63 picoseconds or more")]
+    EpochRangeTooLarge,
 }
 
 /// Parse a complete SRNX observation file from bytes and return the
@@ -43,10 +45,12 @@ pub fn read(bytes: &[u8]) -> Result<ObsFile, SrnxReadError> {
     let header_text = HeaderText::from_bytes(rhdr_bytes);
     let header = rinex_header::parse(rhdr_bytes)?;
 
-    // EPOC → epoch list.
+    // EPOC or EPO2 → epoch list.
     let epoc = file.epoc()?.ok_or(SrnxReadError::NoEpoc)?;
+    let units_per_second = epoc.kind.units_per_second();
     let total_epochs = epoc.epochs.len();
-    let timestamps = continuous_times(&epoc.epochs);
+    let timestamps = continuous_times(&epoc.epochs, units_per_second);
+    check_epoch_range(epoc.kind, &timestamps)?;
     let epochs: Vec<EpochRecord> = epoc.epochs.iter().map(epoch_to_record).collect();
 
     // SDIR.
@@ -106,8 +110,8 @@ pub fn read(bytes: &[u8]) -> Result<ObsFile, SrnxReadError> {
                 }
             })
             .collect::<Result<_, FileError>>()?;
-        let decoded =
-            soc2::decode_satellite(&columns, obs_codes, &times).map_err(FileError::from)?;
+        let decoded = soc2::decode_satellite(&columns, obs_codes, &times, units_per_second)
+            .map_err(FileError::from)?;
         for (code_idx, socd) in decoded.iter().enumerate() {
             let Some(socd) = socd else {
                 continue;
@@ -144,9 +148,10 @@ pub fn read(bytes: &[u8]) -> Result<ObsFile, SrnxReadError> {
     })
 }
 
-// Gregorian day numbers, plus any leap seconds represented by EPOC. A leap
-// second remains in its day's final minute and shifts all later days by 1 s.
-fn continuous_times(epochs: &[Epoch]) -> Vec<i128> {
+// Gregorian day numbers, plus any leap seconds represented by the epoch
+// chunk, in units of `1 / units_per_second` s. A leap second remains in its
+// day's final minute and shifts all later days by 1 s.
+fn continuous_times(epochs: &[Epoch], units_per_second: u64) -> Vec<i128> {
     let mut leap_days = std::collections::BTreeSet::new();
     let day_number = |e: &Epoch| {
         let year = i128::from(e.year) - 1;
@@ -177,10 +182,22 @@ fn continuous_times(epochs: &[Epoch]) -> Vec<i128> {
             let day = day_number(e);
             let leaps = i128::try_from(leap_days.range(..day).count()).unwrap();
             (day * 86_400 + leaps + i128::from(e.hour) * 3600 + i128::from(e.minute) * 60)
-                * 10_000_000
-                + i128::from(e.seconds_e7)
+                * i128::from(units_per_second)
+                + i128::from(e.seconds_in(units_per_second))
         })
         .collect()
+}
+
+// EPO2 requires its timestamp differences to fit in a signed 64-bit integer.
+fn check_epoch_range(kind: EpochChunkKind, timestamps: &[i128]) -> Result<(), SrnxReadError> {
+    if kind == EpochChunkKind::Epo2 {
+        if let (Some(min), Some(max)) = (timestamps.iter().min(), timestamps.iter().max()) {
+            if max - min >= 1 << 63 {
+                return Err(SrnxReadError::EpochRangeTooLarge);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn epoch_to_record(e: &Epoch) -> EpochRecord {
@@ -191,7 +208,7 @@ fn epoch_to_record(e: &Epoch) -> EpochRecord {
         hour: e.hour,
         minute: e.minute,
         seconds_e7: e.seconds_e7,
-        extra_ps: 0,
+        extra_ps: e.extra_ps,
         flag: 0,
         clock_offset_e12: e.clock_offset_e12,
     }
@@ -268,17 +285,31 @@ mod tests {
             hour,
             minute,
             seconds_e7,
+            extra_ps: 0,
             clock_offset_e12: 0,
         };
-        let times = continuous_times(&[
-            e(2016, 12, 31, 23, 59, 590_000_000),
-            e(2016, 12, 31, 23, 59, 600_000_000),
-            e(2017, 1, 1, 0, 0, 0),
-        ]);
+        let u7 = EpochChunkKind::Epoc.units_per_second();
+        let times = continuous_times(
+            &[
+                e(2016, 12, 31, 23, 59, 590_000_000),
+                e(2016, 12, 31, 23, 59, 600_000_000),
+                e(2017, 1, 1, 0, 0, 0),
+            ],
+            u7,
+        );
         assert_eq!(times[1] - times[0], 10_000_000);
         assert_eq!(times[2] - times[1], 10_000_000);
-        let times = continuous_times(&[e(2020, 2, 28, 0, 0, 0), e(2020, 3, 1, 0, 0, 0)]);
+        let times = continuous_times(&[e(2020, 2, 28, 0, 0, 0), e(2020, 3, 1, 0, 0, 0)], u7);
         assert_eq!(times[1] - times[0], 2 * 86400 * 10_000_000);
+
+        // EPO2: picoseconds, including the sub-1e-7 s digits.
+        let mut late = e(2016, 12, 31, 23, 59, 609_999_999);
+        late.extra_ps = 99_999;
+        let times = continuous_times(
+            &[late, e(2017, 1, 1, 0, 0, 0)],
+            EpochChunkKind::Epo2.units_per_second(),
+        );
+        assert_eq!(times[1] - times[0], 1);
     }
 
     #[test]

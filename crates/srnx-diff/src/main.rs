@@ -305,9 +305,14 @@ fn show_header(path: &str) -> Result<(), Box<dyn std::error::Error>> {
 fn show_epochs(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let bytes = std::fs::read(path)?;
     let file = SrnxFile::parse(&bytes)?;
-    let epoc = file.epoc()?.ok_or("SRNX file has no EPOC chunk")?;
+    let epoc = file.epoc()?.ok_or("SRNX file has no EPOC or EPO2 chunk")?;
+    let picoseconds = epoc.kind == epoc::EpochChunkKind::Epo2;
 
     println!("File: {path}");
+    println!(
+        "Epoch chunk: {}",
+        String::from_utf8_lossy(&epoc.kind.fourcc())
+    );
     println!("Total epochs: {}", epoc.epochs.len());
     if epoc.epochs.is_empty() {
         return Ok(());
@@ -323,8 +328,14 @@ fn show_epochs(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let print_one = |label: &str, e: &epoc::Epoch| {
         let whole = e.seconds_e7 / 10_000_000;
         let frac = e.seconds_e7 % 10_000_000;
+        // EPO2 epochs always show their five extra digits, as srnx2rnx does.
+        let ps = if picoseconds {
+            format!("{:05}", e.extra_ps)
+        } else {
+            String::new()
+        };
         println!(
-            "  {label}: {:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:07}  clock_e12={}",
+            "  {label}: {:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:07}{ps}  clock_e12={}",
             e.year, e.month, e.day, e.hour, e.minute, whole, frac, e.clock_offset_e12
         );
     };

@@ -1,6 +1,6 @@
-//! Parser for the `EPOC` (Epoch Records) chunk's payload.
+//! Parser for the `EPOC` and `EPO2` (Epoch Records) chunks' payloads.
 //!
-//! Per `docs/Succinct_RINEX.md` §EPOC:
+//! Per `docs/Succinct_RINEX.md` §EPOC and §EPO2:
 //!
 //! ```text
 //! ULEB128 total_epoch_count
@@ -8,25 +8,30 @@
 //!   SLEB128 interval
 //!   ULEB128 (epochs_in_span - 1)
 //!   ULEB128 packed_date  =  year*10000 + month*100 + day
-//!   ULEB128 packed_time  =  hour*1e11 + minute*1e9 + second*1e7
+//!   ULEB128 packed_time  =  (hour*10000 + minute*100 + second) * U
 //! optional RLE-encoded receiver clock offsets:
 //!   pairs of  (SLEB128 value*1e12, ULEB128 (run_count - 1))
 //! ```
+//!
+//! The two chunks differ only in their time unit `U`: 10⁷ per second for
+//! `EPOC` and 10¹² per second (picoseconds) for `EPO2`.  At most one of the
+//! two is present in a file; the spec calls whichever it is the *epoch
+//! chunk*.
 //!
 //! ## Interval encoding
 //!
 //! The SLEB128 interval is asymmetric for compactness:
 //! * **negative** values mean integer-second intervals — interval is
 //!   `-stored_value` seconds (so `SLEB128(-1)` is 1 s, `SLEB128(-30)` is 30 s).
-//! * **positive** values are sub-second intervals expressed as
-//!   `seconds × 10⁷` (so `SLEB128(5_000_000)` is 0.5 s).
+//! * **positive** values are intervals expressed as `seconds × U` (so
+//!   `SLEB128(5_000_000)` is 0.5 s in `EPOC`).
 //!
 //! ## Time advancement
 //!
 //! Within a span, each successive epoch is at `prev + interval`. When the
 //! resulting seconds value is **at least 60**, the excess carries into the
 //! next higher unit (minutes, then hours).  The sole exception is the
-//! leap-second range `23:59:60.0` through `23:59:60.9999999`, which is
+//! leap-second range `23:59:60` up to (but excluding) `23:59:61`, which is
 //! preserved as-is.  A timestamp `>= 23:59:61` is illegal per the spec.
 //! Encoders MUST start a new span at each day boundary (the first epoch of
 //! each day), so within a single span hours stay in `0..=23`.
@@ -43,16 +48,48 @@ use crate::leb128::{read_sleb128, read_uleb128, LebError};
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum EpocError {
-    #[error("invalid LEB128 in EPOC chunk: {0}")]
+    #[error("invalid LEB128 in epoch chunk: {0}")]
     Leb(#[from] LebError),
-    #[error("EPOC declared {declared} epochs but spans cover {covered}")]
+    #[error("epoch chunk declared {declared} epochs but spans cover {covered}")]
     SpanCountMismatch { declared: u64, covered: u64 },
-    #[error("EPOC date encoding {0} is invalid")]
+    #[error("epoch chunk date encoding {0} is invalid")]
     BadDate(u64),
-    #[error("EPOC time encoding {0} is invalid")]
+    #[error("epoch chunk time encoding {0} is invalid")]
     BadTime(u64),
-    #[error("EPOC epoch count {0} exceeds addressable memory")]
+    #[error("epoch chunk interval {0} is out of range")]
+    BadInterval(i64),
+    #[error("epoch chunk epoch count {0} exceeds addressable memory")]
     TooManyEpochs(u64),
+}
+
+/// Which epoch chunk a payload came from, which fixes its time unit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum EpochChunkKind {
+    /// `EPOC`: times in units of 10⁻⁷ s.
+    #[default]
+    Epoc,
+    /// `EPO2` (revision 1.2): times in units of 10⁻¹² s.
+    Epo2,
+}
+
+impl EpochChunkKind {
+    /// The chunk's time unit `U`, in units per second.
+    #[must_use]
+    pub const fn units_per_second(self) -> u64 {
+        match self {
+            Self::Epoc => 10_000_000,
+            Self::Epo2 => 1_000_000_000_000,
+        }
+    }
+
+    /// The chunk's FOURCC tag.
+    #[must_use]
+    pub const fn fourcc(self) -> [u8; 4] {
+        match self {
+            Self::Epoc => *b"EPOC",
+            Self::Epo2 => *b"EPO2",
+        }
+    }
 }
 
 /// One materialized epoch record. Time fields are kept verbatim from the
@@ -65,24 +102,41 @@ pub struct Epoch {
     pub day: u8,
     pub hour: u8,
     pub minute: u8,
-    /// Seconds within the minute, as `s × 10⁷`.
+    /// Seconds within the minute, as `s × 10⁷`, floored.
     pub seconds_e7: u64,
+    /// Picoseconds beyond `seconds_e7` (0–99 999).  Always zero for `EPOC`.
+    pub extra_ps: u32,
     /// Receiver clock offset, as `value × 10¹²`. Zero if not specified.
     pub clock_offset_e12: i64,
 }
 
+impl Epoch {
+    /// Seconds within the minute, in units of `1 / units_per_second` s.
+    /// `units_per_second` must be a multiple of 10⁷ that divides 10¹².
+    #[must_use]
+    pub fn seconds_in(&self, units_per_second: u64) -> u64 {
+        let ps_per_unit = 1_000_000_000_000 / units_per_second;
+        self.seconds_e7 * (units_per_second / 10_000_000) + u64::from(self.extra_ps) / ps_per_unit
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Epoc {
+    pub kind: EpochChunkKind,
     pub epochs: Vec<Epoch>,
 }
 
-pub fn parse(payload: &[u8]) -> Result<Epoc, EpocError> {
+pub fn parse(payload: &[u8], kind: EpochChunkKind) -> Result<Epoc, EpocError> {
+    let units = kind.units_per_second();
     let mut cursor: &[u8] = payload;
     let total = read_uleb128(&mut cursor)?;
     let total_usize = usize::try_from(total).map_err(|_| EpocError::TooManyEpochs(total))?;
 
     if total == 0 {
-        return Ok(Epoc::default());
+        return Ok(Epoc {
+            kind,
+            epochs: Vec::new(),
+        });
     }
 
     let mut epochs: Vec<Epoch> = Vec::with_capacity(total_usize);
@@ -96,13 +150,14 @@ pub fn parse(payload: &[u8]) -> Result<Epoc, EpocError> {
         let time = read_uleb128(&mut cursor)?;
 
         let (year, month, day) = decode_date(date)?;
-        let (mut hour, mut minute, mut seconds_e7) = decode_time(time)?;
-        let interval_e7 = interval_to_e7(interval);
+        let (mut hour, mut minute, mut seconds) = decode_time(time, units)?;
+        let interval_units = interval_to_units(interval, units)?;
 
         for i in 0..span_count {
             if i > 0 {
-                advance_time(&mut hour, &mut minute, &mut seconds_e7, interval_e7);
+                advance_time(&mut hour, &mut minute, &mut seconds, interval_units, units);
             }
+            let (seconds_e7, extra_ps) = split_seconds(seconds, units);
             epochs.push(Epoch {
                 year,
                 month,
@@ -110,6 +165,7 @@ pub fn parse(payload: &[u8]) -> Result<Epoc, EpocError> {
                 hour,
                 minute,
                 seconds_e7,
+                extra_ps,
                 clock_offset_e12: 0,
             });
             if u64::try_from(epochs.len()).expect("len fits in u64") == total {
@@ -139,7 +195,19 @@ pub fn parse(payload: &[u8]) -> Result<Epoc, EpocError> {
         idx = end;
     }
 
-    Ok(Epoc { epochs })
+    Ok(Epoc { kind, epochs })
+}
+
+/// Split seconds-within-minute in chunk units into `(seconds_e7, extra_ps)`,
+/// flooring to 10⁻⁷ s as RINEX 4.02 does when the extra digits are present.
+fn split_seconds(seconds: u64, units: u64) -> (u64, u32) {
+    let units_per_e7 = units / 10_000_000;
+    let ps_per_unit = 1_000_000_000_000 / units;
+    let extra = (seconds % units_per_e7) * ps_per_unit;
+    (
+        seconds / units_per_e7,
+        u32::try_from(extra).expect("sub-1e-7 s remainder fits in u32"),
+    )
 }
 
 fn decode_date(packed: u64) -> Result<(u16, u8, u8), EpocError> {
@@ -168,59 +236,59 @@ fn decode_date(packed: u64) -> Result<(u16, u8, u8), EpocError> {
     Ok((year, month_u64 as u8, day_u64 as u8))
 }
 
-fn decode_time(packed: u64) -> Result<(u8, u8, u64), EpocError> {
-    const PER_HOUR: u64 = 100_000_000_000;
-    const PER_MINUTE: u64 = 1_000_000_000;
+fn decode_time(packed: u64, units: u64) -> Result<(u8, u8, u64), EpocError> {
+    let per_minute = 100 * units;
+    let per_hour = 100 * per_minute;
 
-    let hour_u64 = packed / PER_HOUR;
-    let after_hour = packed % PER_HOUR;
-    let minute_u64 = after_hour / PER_MINUTE;
-    let seconds_e7 = after_hour % PER_MINUTE;
+    let hour_u64 = packed / per_hour;
+    let after_hour = packed % per_hour;
+    let minute_u64 = after_hour / per_minute;
+    let seconds = after_hour % per_minute;
 
     if hour_u64 > 23 || minute_u64 > 59 {
         return Err(EpocError::BadTime(packed));
     }
 
     #[allow(clippy::cast_possible_truncation)]
-    Ok((hour_u64 as u8, minute_u64 as u8, seconds_e7))
+    Ok((hour_u64 as u8, minute_u64 as u8, seconds))
 }
 
-fn interval_to_e7(interval: i64) -> i64 {
+fn interval_to_units(interval: i64, units: u64) -> Result<i64, EpocError> {
     if interval < 0 {
-        // Saturating because i64::MIN cannot be negated; real intervals are tiny.
         interval
             .checked_neg()
-            .and_then(|n| n.checked_mul(10_000_000))
-            .unwrap_or(i64::MAX)
+            .and_then(|n| n.checked_mul(i64::try_from(units).ok()?))
+            .ok_or(EpocError::BadInterval(interval))
     } else {
-        interval
+        Ok(interval)
     }
 }
 
 #[allow(clippy::cast_possible_truncation)]
-fn advance_time(hour: &mut u8, minute: &mut u8, seconds_e7: &mut u64, interval_e7: i64) {
-    let new_s = i128::from(*seconds_e7) + i128::from(interval_e7);
+fn advance_time(hour: &mut u8, minute: &mut u8, seconds: &mut u64, interval: i64, units: u64) {
+    let new_s = i128::from(*seconds) + i128::from(interval);
     if new_s < 0 {
-        *seconds_e7 = 0;
+        *seconds = 0;
     } else {
         let new_s64 = u64::try_from(new_s).unwrap_or(u64::MAX);
-        // Leap-second exception: 23:59:60.0 through 23:59:60.9999999 are
-        // preserved as-is.  The spec forbids >= 23:59:61 and requires new
-        // spans at day boundaries, so we don't need to carry past this.
-        if *hour == 23 && *minute == 59 && new_s64 < 610_000_000 {
-            *seconds_e7 = new_s64;
-        } else if new_s64 >= 60 * 10_000_000 {
-            let carry_minutes = new_s64 / 10_000_000 / 60;
-            *seconds_e7 = new_s64 % (60 * 10_000_000);
+        let per_minute = 60 * units;
+        // Leap-second exception: 23:59:60 up to 23:59:61 is preserved
+        // as-is.  The spec forbids >= 23:59:61 and requires new spans at
+        // day boundaries, so we don't need to carry past this.
+        if *hour == 23 && *minute == 59 && new_s64 < 61 * units {
+            *seconds = new_s64;
+        } else if new_s64 >= per_minute {
+            let carry_minutes = new_s64 / per_minute;
+            *seconds = new_s64 % per_minute;
             let new_minute = u64::from(*minute) + carry_minutes;
             if new_minute >= 60 {
-                *hour = hour.saturating_add((new_minute / 60) as u8);
+                *hour = hour.saturating_add(u8::try_from(new_minute / 60).unwrap_or(u8::MAX));
                 *minute = (new_minute % 60) as u8;
             } else {
                 *minute = new_minute as u8;
             }
         } else {
-            *seconds_e7 = new_s64;
+            *seconds = new_s64;
         }
     }
 }
@@ -273,7 +341,7 @@ mod tests {
     #[test]
     fn empty_epoc() {
         let payload = enc_uleb(0);
-        let e = parse(&payload).unwrap();
+        let e = parse(&payload, EpochChunkKind::Epoc).unwrap();
         assert!(e.epochs.is_empty());
     }
 
@@ -281,7 +349,7 @@ mod tests {
     fn single_span_integer_interval() {
         // 10 epochs, 1 s interval (encoded as -1), starting 2020-07-18 00:00:00.
         let p = build_payload(10, &[(-1, 9, 20_200_718, 0)], &[]);
-        let e = parse(&p).unwrap();
+        let e = parse(&p, EpochChunkKind::Epoc).unwrap();
         assert_eq!(e.epochs.len(), 10);
         for (i, ep) in e.epochs.iter().enumerate() {
             assert_eq!(ep.year, 2020);
@@ -298,7 +366,7 @@ mod tests {
     fn single_span_fractional_interval() {
         // 4 epochs at 0.5 s starting at 00:00:00 → seconds 0.0, 0.5, 1.0, 1.5.
         let p = build_payload(4, &[(5_000_000, 3, 20_200_718, 0)], &[]);
-        let e = parse(&p).unwrap();
+        let e = parse(&p, EpochChunkKind::Epoc).unwrap();
         let secs: Vec<u64> = e.epochs.iter().map(|ep| ep.seconds_e7).collect();
         assert_eq!(secs, vec![0, 5_000_000, 10_000_000, 15_000_000]);
     }
@@ -307,7 +375,7 @@ mod tests {
     fn minute_rollover_on_exact_60() {
         // 70 epochs at 1 s starting at 00:00:00 → epoch 60 is 00:01:00.
         let p = build_payload(70, &[(-1, 69, 20_200_718, 0)], &[]);
-        let e = parse(&p).unwrap();
+        let e = parse(&p, EpochChunkKind::Epoc).unwrap();
         assert_eq!(e.epochs[59].minute, 0);
         assert_eq!(e.epochs[59].seconds_e7, 59 * 10_000_000);
         assert_eq!(e.epochs[60].minute, 1);
@@ -322,7 +390,7 @@ mod tests {
         // At i=10 we hit 01:00:00 (m += 1 → 60 → reset to 0, h += 1).
         let start_time = 59 * 1_000_000_000 + 50 * 10_000_000;
         let p = build_payload(20, &[(-1, 19, 20_200_718, start_time)], &[]);
-        let e = parse(&p).unwrap();
+        let e = parse(&p, EpochChunkKind::Epoc).unwrap();
         assert_eq!(
             (e.epochs[9].hour, e.epochs[9].minute, e.epochs[9].seconds_e7),
             (0, 59, 59 * 10_000_000)
@@ -346,7 +414,7 @@ mod tests {
         // still handle it gracefully by carrying.
         let start = 23 * 100_000_000_000 + 59 * 1_000_000_000 + 60 * 10_000_000;
         let p = build_payload(4, &[(5_000_000, 3, 20_200_718, start)], &[]);
-        let e = parse(&p).unwrap();
+        let e = parse(&p, EpochChunkKind::Epoc).unwrap();
         // Epoch 0: 23:59:60.0 (leap second, preserved)
         assert_eq!(e.epochs[0].hour, 23);
         assert_eq!(e.epochs[0].minute, 59);
@@ -376,7 +444,7 @@ mod tests {
         );
         let span2 = (-1, 4, 20_200_719, 0);
         let p = build_payload(10, &[span1, span2], &[]);
-        let e = parse(&p).unwrap();
+        let e = parse(&p, EpochChunkKind::Epoc).unwrap();
         assert_eq!(e.epochs.len(), 10);
         assert_eq!(
             (
@@ -411,7 +479,7 @@ mod tests {
     fn clock_offsets_basic() {
         // 5 epochs, two clock-offset runs: value=100 ×3, value=-50 ×2.
         let p = build_payload(5, &[(-1, 4, 20_200_718, 0)], &[(100, 2), (-50, 1)]);
-        let e = parse(&p).unwrap();
+        let e = parse(&p, EpochChunkKind::Epoc).unwrap();
         let offsets: Vec<i64> = e.epochs.iter().map(|ep| ep.clock_offset_e12).collect();
         assert_eq!(offsets, vec![100, 100, 100, -50, -50]);
     }
@@ -420,7 +488,7 @@ mod tests {
     fn clock_offsets_padded_with_zeros() {
         // 5 epochs but only one offset run covering 2 epochs → trailing 3 are zero.
         let p = build_payload(5, &[(-1, 4, 20_200_718, 0)], &[(42, 1)]);
-        let e = parse(&p).unwrap();
+        let e = parse(&p, EpochChunkKind::Epoc).unwrap();
         let offsets: Vec<i64> = e.epochs.iter().map(|ep| ep.clock_offset_e12).collect();
         assert_eq!(offsets, vec![42, 42, 0, 0, 0]);
     }
@@ -429,7 +497,7 @@ mod tests {
     fn clock_offsets_omitted_means_all_zero() {
         // RINEX 2 case: no clock offsets at all.
         let p = build_payload(3, &[(-1, 2, 20_200_718, 0)], &[]);
-        let e = parse(&p).unwrap();
+        let e = parse(&p, EpochChunkKind::Epoc).unwrap();
         for ep in &e.epochs {
             assert_eq!(ep.clock_offset_e12, 0);
         }
@@ -439,13 +507,13 @@ mod tests {
     fn rinex2_year_disambiguation() {
         // year_part=99 → 1999, year_part=20 → 2020.
         let p = build_payload(1, &[(-1, 0, 99 * 10_000 + 100 + 2, 0)], &[]);
-        let e = parse(&p).unwrap();
+        let e = parse(&p, EpochChunkKind::Epoc).unwrap();
         assert_eq!(e.epochs[0].year, 1999);
         assert_eq!(e.epochs[0].month, 1);
         assert_eq!(e.epochs[0].day, 2);
 
         let p = build_payload(1, &[(-1, 0, 20 * 10_000 + 7 * 100 + 18, 0)], &[]);
-        let e = parse(&p).unwrap();
+        let e = parse(&p, EpochChunkKind::Epoc).unwrap();
         assert_eq!(e.epochs[0].year, 2020);
     }
 
@@ -457,7 +525,84 @@ mod tests {
         // header from the (likely empty) cursor → either Leb error or
         // SpanCountMismatch on subsequent iterations. The exact failure
         // depends on the truncation point. Assert that we get *some* error.
-        assert!(parse(&p).is_err());
+        assert!(parse(&p, EpochChunkKind::Epoc).is_err());
+    }
+
+    const PS_PER_MINUTE: u64 = 100_000_000_000_000;
+    const PS_PER_HOUR: u64 = 100 * PS_PER_MINUTE;
+
+    #[test]
+    fn epo2_time_of_day_and_fractional_interval() {
+        // 13:10:36.123456712345, then +1.000000023455 s → 13:10:37.123456735800.
+        let start = 13 * PS_PER_HOUR + 10 * PS_PER_MINUTE + 36_123_456_712_345;
+        let p = build_payload(2, &[(1_000_000_023_455, 1, 20_241_001, start)], &[]);
+        let e = parse(&p, EpochChunkKind::Epo2).unwrap();
+        assert_eq!(e.kind, EpochChunkKind::Epo2);
+        let t: Vec<_> = e
+            .epochs
+            .iter()
+            .map(|ep| (ep.hour, ep.minute, ep.seconds_e7, ep.extra_ps))
+            .collect();
+        assert_eq!(
+            t,
+            [(13, 10, 361_234_567, 12_345), (13, 10, 371_234_567, 35_800)]
+        );
+        assert_eq!(
+            e.epochs[1].seconds_in(1_000_000_000_000),
+            37_123_456_735_800
+        );
+        assert_eq!(e.epochs[1].seconds_in(10_000_000), 371_234_567);
+    }
+
+    #[test]
+    fn epo2_negative_interval_is_whole_seconds() {
+        // 3 epochs at 30 s from 00:00:59.000000000001 carry into minutes.
+        let p = build_payload(3, &[(-30, 2, 20_241_001, 59_000_000_000_001)], &[]);
+        let e = parse(&p, EpochChunkKind::Epo2).unwrap();
+        let t: Vec<_> = e
+            .epochs
+            .iter()
+            .map(|ep| (ep.minute, ep.seconds_e7, ep.extra_ps))
+            .collect();
+        assert_eq!(
+            t,
+            [
+                (0, 590_000_000, 1),
+                (1, 290_000_000, 1),
+                (1, 590_000_000, 1)
+            ]
+        );
+    }
+
+    #[test]
+    fn epo2_leap_second_preserved_below_61() {
+        let start = 23 * PS_PER_HOUR + 59 * PS_PER_MINUTE + 60_000_000_000_000;
+        let p = build_payload(2, &[(999_999_999_999, 1, 20_161_231, start)], &[]);
+        let e = parse(&p, EpochChunkKind::Epo2).unwrap();
+        let last = e.epochs[1];
+        assert_eq!(
+            (last.hour, last.minute, last.seconds_e7, last.extra_ps),
+            (23, 59, 609_999_999, 99_999)
+        );
+    }
+
+    #[test]
+    fn epoc_never_has_extra_ps() {
+        let p = build_payload(2, &[(1, 1, 20_241_001, 0)], &[]);
+        let e = parse(&p, EpochChunkKind::Epoc).unwrap();
+        assert!(e.epochs.iter().all(|ep| ep.extra_ps == 0));
+        assert_eq!(e.epochs[1].seconds_e7, 1);
+    }
+
+    #[test]
+    fn overflowing_whole_second_interval_is_rejected() {
+        // 10^7 s is fine as 10^14 units of 1e-7 s but overflows i64 picoseconds.
+        let p = build_payload(2, &[(-10_000_000, 1, 20_241_001, 0)], &[]);
+        assert!(parse(&p, EpochChunkKind::Epoc).is_ok());
+        assert_eq!(
+            parse(&p, EpochChunkKind::Epo2),
+            Err(EpocError::BadInterval(-10_000_000))
+        );
     }
 
     fn try_load_epoc(name: &str) -> Option<Vec<u8>> {
@@ -478,7 +623,7 @@ mod tests {
         let Some(payload) = try_load_epoc("at012000.srnx") else {
             return;
         };
-        let e = parse(&payload).unwrap();
+        let e = parse(&payload, EpochChunkKind::Epoc).unwrap();
         assert_eq!(e.epochs.len(), 86_400, "at012000 should have 86400 epochs");
         let first = &e.epochs[0];
         assert_eq!((first.year, first.month, first.day), (2020, 7, 18));
@@ -499,7 +644,7 @@ mod tests {
         let Some(payload) = try_load_epoc("abmf.srnx") else {
             return;
         };
-        let e = parse(&payload).unwrap();
+        let e = parse(&payload, EpochChunkKind::Epoc).unwrap();
         assert_eq!(
             e.epochs.len(),
             2880,
@@ -519,7 +664,7 @@ mod tests {
         let Some(payload) = try_load_epoc("okcb1200.srnx") else {
             return;
         };
-        let e = parse(&payload).unwrap();
+        let e = parse(&payload, EpochChunkKind::Epoc).unwrap();
         assert_eq!(e.epochs.len(), 86_400);
     }
 
@@ -528,7 +673,7 @@ mod tests {
         let Some(payload) = try_load_epoc("sbst1200.srnx") else {
             return;
         };
-        let e = parse(&payload).unwrap();
+        let e = parse(&payload, EpochChunkKind::Epoc).unwrap();
         assert_eq!(e.epochs.len(), 86_400);
     }
 }

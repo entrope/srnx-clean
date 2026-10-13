@@ -4,7 +4,7 @@
 //! by itself: parse the `SRNX` header chunk to learn the per-chunk and
 //! file-level digest IDs, verify both digests, and walk the rest of the file
 //! recording every body chunk along with its absolute file offset. Per-chunk
-//! payload parsing for `RHDR`, `EPOC`, `SATE`, `SOCD`, `EVTF` is the job of
+//! payload parsing for `RHDR`, `EPOC`/`EPO2`, `SATE`, `SOCD`, `EVTF` is the job of
 //! later phases — this module only frames them.
 
 use std::collections::BTreeMap;
@@ -13,7 +13,7 @@ use thiserror::Error;
 
 use crate::chunk::{read_chunk, read_framed, ChunkError};
 use crate::digest::DigestError;
-use crate::epoc::{self, Epoc, EpocError};
+use crate::epoc::{self, Epoc, EpocError, EpochChunkKind};
 use crate::evtf::{self, Evtf, EvtfError};
 use crate::sate::{self, Sate, SateError};
 use crate::sdir::{self, Sdir, SdirError};
@@ -29,6 +29,8 @@ pub const RHDR_TAG: [u8; 4] = *b"RHDR";
 pub const SDIR_TAG: [u8; 4] = *b"SDIR";
 /// FOURCC tag for the epoch records chunk.
 pub const EPOC_TAG: [u8; 4] = *b"EPOC";
+/// FOURCC tag for revision 1.2 epoch records with picosecond resolution.
+pub const EPO2_TAG: [u8; 4] = *b"EPO2";
 /// FOURCC tag for the satellite observations metadata chunk.
 pub const SATE_TAG: [u8; 4] = *b"SATE";
 /// FOURCC tag for the satellite observation code data chunk.
@@ -46,8 +48,13 @@ pub enum FileError {
     Header(#[from] SrnxHeaderError),
     #[error("SDIR chunk error: {0}")]
     Sdir(#[from] SdirError),
-    #[error("EPOC chunk error: {0}")]
-    Epoc(#[from] EpocError),
+    #[error("{} chunk error: {source}", String::from_utf8_lossy(&kind.fourcc()))]
+    Epoc {
+        kind: EpochChunkKind,
+        source: EpocError,
+    },
+    #[error("file has both EPOC and EPO2 chunks")]
+    MultipleEpochChunks,
     #[error("SATE chunk error: {0}")]
     Sate(#[from] SateError),
     #[error("SOCD chunk error: {0}")]
@@ -165,7 +172,7 @@ impl<'a> SrnxFile<'a> {
 
     /// Locate the body chunk whose FOURCC tag begins at `offset`. Linear
     /// scan; sufficient for the small number of named offsets that exist in
-    /// any one file (currently SDIR + EPOC + first EVTF).
+    /// any one file (currently SDIR + epoch chunk + first EVTF).
     #[must_use]
     pub fn chunk_at_offset(&self, offset: u64) -> Option<&BodyChunk<'a>> {
         self.chunks.iter().find(|c| c.file_offset == offset)
@@ -203,9 +210,9 @@ impl<'a> SrnxFile<'a> {
         Ok(Some(sdir::parse(chunk.payload)?))
     }
 
-    /// Parse the `EPOC` chunk if present. Located via the `SDIR` chunk's
-    /// `epoc_offset`, mirroring the SRNX-spec discovery mechanism. Returns
-    /// `Ok(None)` when there is no SDIR or no epochs.
+    /// Parse the epoch chunk (`EPOC` or `EPO2`) if present. Located via the
+    /// `SDIR` chunk's `epoc_offset`, mirroring the SRNX-spec discovery
+    /// mechanism. Returns `Ok(None)` when there is no SDIR or no epochs.
     pub fn epoc(&self) -> Result<Option<Epoc>, FileError> {
         let Some(sdir) = self.sdir()? else {
             return Ok(None);
@@ -213,23 +220,34 @@ impl<'a> SrnxFile<'a> {
         if sdir.epoc_offset == 0 {
             return Ok(None);
         }
+        if self.chunks.iter().any(|c| c.fourcc == EPOC_TAG)
+            && self.chunks.iter().any(|c| c.fourcc == EPO2_TAG)
+        {
+            return Err(FileError::MultipleEpochChunks);
+        }
         let chunk = self
             .chunk_at_offset(sdir.epoc_offset)
             .ok_or(FileError::Truncated {
-                what: "EPOC chunk at advertised offset",
+                what: "epoch chunk at advertised offset",
             })?;
-        if chunk.fourcc != EPOC_TAG {
-            return Err(FileError::Truncated {
-                what: "EPOC chunk at advertised offset (FOURCC mismatch)",
-            });
-        }
-        Ok(Some(epoc::parse(chunk.payload)?))
+        let kind = match chunk.fourcc {
+            EPOC_TAG => EpochChunkKind::Epoc,
+            EPO2_TAG => EpochChunkKind::Epo2,
+            _ => {
+                return Err(FileError::Truncated {
+                    what: "epoch chunk at advertised offset (FOURCC mismatch)",
+                })
+            }
+        };
+        let epoc =
+            epoc::parse(chunk.payload, kind).map_err(|source| FileError::Epoc { kind, source })?;
+        Ok(Some(epoc))
     }
 
     /// Parse a `SATE` chunk at the given absolute file offset.
     ///
     /// `num_obs_codes` must match the number of observation codes declared in
-    /// the `RHDR` header; `total_epochs` is the count from the `EPOC` chunk.
+    /// the `RHDR` header; `total_epochs` is the count from the epoch chunk.
     pub fn sate_at(
         &self,
         offset: u64,
