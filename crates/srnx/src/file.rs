@@ -41,6 +41,7 @@ pub const SOC2_TAG: [u8; 4] = *b"SOC2";
 pub const EVTF_TAG: [u8; 4] = *b"EVTF";
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum FileError {
     #[error("chunk framing error: {0}")]
     Framing(#[from] ChunkError),
@@ -295,7 +296,7 @@ impl<'a> SrnxFile<'a> {
     }
 
     /// Parse SOC2 residuals and metadata at an absolute offset. Cross-signal
-    /// references must subsequently be resolved with `soc2::decode_satellite`.
+    /// references must subsequently be resolved with `soc2::SatelliteColumns`.
     pub fn soc2_at(&self, offset: u64) -> Result<Soc2, FileError> {
         let chunk = self.chunk_at_offset(offset).ok_or(FileError::Truncated {
             what: "SOC2 chunk at given offset",

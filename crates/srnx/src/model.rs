@@ -6,7 +6,8 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use crate::rinex_header::{Header, HeaderText, ObsCode, SatSystem};
+use crate::rinex_header::Header;
+pub use crate::rinex_header::{HeaderText, ObsCode, SatSystem};
 
 /// Satellite identifier: system code byte (`b'G'`, `b'R'`, `b'E'`, …) + PRN.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

@@ -16,6 +16,7 @@ use crate::compat::split_first_chunk;
 use crate::leb128::{read_uleb128, LebError};
 
 #[derive(Debug, Error, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SdirError {
     #[error("invalid LEB128 in SDIR chunk: {0}")]
     Leb(#[from] LebError),

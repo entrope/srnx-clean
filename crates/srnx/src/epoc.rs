@@ -47,6 +47,7 @@ use thiserror::Error;
 use crate::leb128::{read_sleb128, read_uleb128, LebError};
 
 #[derive(Debug, Error, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum EpocError {
     #[error("invalid LEB128 in epoch chunk: {0}")]
     Leb(#[from] LebError),

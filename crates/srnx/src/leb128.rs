@@ -18,6 +18,7 @@
 use thiserror::Error;
 
 #[derive(Debug, Error, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum LebError {
     #[error("input truncated while decoding LEB128")]
     Truncated,

@@ -9,9 +9,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use srnx::model::{Catalog, ObsFile, SatId};
+use srnx::model::{Catalog, ObsCode, ObsFile, SatId, SatSystem};
 use srnx::reader::{self, Format};
-use srnx::rinex_header::{ObsCode, SatSystem};
 
 fn try_load(name: &str) -> Option<Vec<u8>> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

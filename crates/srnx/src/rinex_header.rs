@@ -129,6 +129,7 @@ impl std::ops::Deref for HeaderText {
 
 #[doc(hidden)]
 #[derive(Debug, Error, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum HeaderError {
     #[error("RINEX header is not valid UTF-8")]
     NotUtf8,

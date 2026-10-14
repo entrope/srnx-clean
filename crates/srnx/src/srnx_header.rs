@@ -20,6 +20,7 @@ pub const SUPPORTED_MAJOR: u64 = 1;
 pub const SUPPORTED_MINOR: u64 = 2;
 
 #[derive(Debug, Error, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SrnxHeaderError {
     #[error("invalid LEB128 in SRNX header: {0}")]
     Leb(#[from] LebError),

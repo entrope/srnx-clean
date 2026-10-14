@@ -44,6 +44,7 @@ use crate::model::{
 use crate::rinex_header::{self, Header, HeaderError, HeaderText, ObsCode, SatSystem};
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum Rinex2Error {
     #[error("header parse error: {0}")]
     Header(#[from] HeaderError),

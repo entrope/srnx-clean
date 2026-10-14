@@ -11,7 +11,7 @@
 //! the very first chunk a chicken-and-egg case: callers must parse the SRNX
 //! payload before they can know how to frame any other chunk. See
 //! [`read_framed`] (which ignores digests entirely) for the bootstrap path,
-//! and [`ChunkIter`] for the steady-state iteration path used after the
+//! and [`read_chunk`] for framing (and digest-checking) each chunk once the
 //! digest ID is known.
 //!
 //! This module does not interpret FOURCCs — unknown chunk types are yielded
@@ -24,6 +24,7 @@ use crate::digest::{DigestError, DigestId};
 use crate::leb128::{read_uleb128, LebError};
 
 #[derive(Debug, Error, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ChunkError {
     #[error("input truncated while reading {what}")]
     Truncated { what: &'static str },
@@ -112,12 +113,14 @@ pub fn read_chunk(input: &[u8], digest_id: DigestId) -> Result<(Chunk<'_>, &[u8]
 ///
 /// On the first error, the iterator yields `Some(Err(...))` and then `None`
 /// on every subsequent call.
+#[cfg(test)]
 pub struct ChunkIter<'a> {
     remaining: &'a [u8],
     digest_id: DigestId,
     halted: bool,
 }
 
+#[cfg(test)]
 impl<'a> ChunkIter<'a> {
     #[must_use]
     pub fn new(data: &'a [u8], digest_id: DigestId) -> Self {
@@ -127,14 +130,9 @@ impl<'a> ChunkIter<'a> {
             halted: false,
         }
     }
-
-    /// Bytes not yet consumed.
-    #[must_use]
-    pub fn remaining(&self) -> &'a [u8] {
-        self.remaining
-    }
 }
 
+#[cfg(test)]
 impl<'a> Iterator for ChunkIter<'a> {
     type Item = Result<Chunk<'a>, ChunkError>;
 

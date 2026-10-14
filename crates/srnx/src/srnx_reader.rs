@@ -16,6 +16,7 @@ use crate::soc2::{Column, SatelliteColumns};
 use crate::socd::ABSENT;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum SrnxReadError {
     #[error("SRNX file error: {0}")]
     File(#[from] FileError),

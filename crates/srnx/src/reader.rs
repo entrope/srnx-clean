@@ -3,14 +3,16 @@
 
 use thiserror::Error;
 
-use crate::crinex::{self, CrinexError};
 use crate::model::{Catalog, ObsFile, SignalFilter};
-use crate::rinex2_obs::{self, Rinex2Error};
-use crate::rinex3_obs::{self, Rinex3Error};
-use crate::rinex_header;
-use crate::srnx_reader::{self, SrnxReadError};
+use crate::{crinex, rinex2_obs, rinex3_obs, rinex_header, srnx_reader};
+
+pub use crate::crinex::CrinexError;
+pub use crate::rinex2_obs::Rinex2Error;
+pub use crate::rinex3_obs::Rinex3Error;
+pub use crate::srnx_reader::SrnxReadError;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ReadError {
     #[error(transparent)]
     Srnx(#[from] SrnxReadError),
@@ -24,6 +26,7 @@ pub enum ReadError {
 
 /// An observation file format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Format {
     Srnx,
     /// Compact RINEX (Hatanaka) 1.0, 3.0 or 3.1.
@@ -88,7 +91,7 @@ pub fn catalog(bytes: &[u8]) -> Result<Catalog, ReadError> {
 /// satellite/signal pairs that `filter` selects (all of them for `None`).
 ///
 /// ```no_run
-/// use srnx::rinex_header::ObsCode;
+/// use srnx::model::ObsCode;
 ///
 /// let bytes = std::fs::read("abmf1190.26o")?;
 /// let l1c = ObsCode::from_v3("L1C").unwrap();

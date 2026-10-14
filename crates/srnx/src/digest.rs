@@ -20,6 +20,7 @@
 use thiserror::Error;
 
 #[derive(Debug, Error, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DigestError {
     #[error("unknown digest identifier {0}")]
     Unknown(u64),

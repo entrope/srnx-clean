@@ -52,6 +52,7 @@ use crate::rinex2_obs::{byte_at, parse_obs_at};
 use crate::rinex_header::{self, Header, HeaderError, HeaderText, ObsCode, SatSystem};
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum Rinex3Error {
     #[error("header parse error: {0}")]
     Header(#[from] HeaderError),

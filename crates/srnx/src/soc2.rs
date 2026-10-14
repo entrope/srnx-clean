@@ -1,6 +1,6 @@
 //! Revision 1.1 observation decoding, including split Rice and cross-signal prediction.
 //!
-//! [`parse`] decodes residuals and metadata without references. [`decode_satellite`]
+//! [`parse`] decodes residuals and metadata without references. [`SatelliteColumns`]
 //! resolves value dependencies, then SSI dependencies, in RHDR observation-code order.
 use std::collections::BTreeMap;
 
@@ -12,6 +12,7 @@ use crate::rinex_header::ObsCode;
 use crate::socd::{DeltaIntegrator, Socd, ABSENT};
 
 #[derive(Debug, Error, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Soc2Error {
     #[error("invalid LEB128 in SOC2: {0}")]
     Leb(#[from] LebError),
@@ -381,6 +382,7 @@ impl Column {
 /// Resolve all of a satellite's observation values and indicators. Times
 /// are continuous timestamps in units of `1 / units_per_second` seconds (the
 /// epoch chunk's time unit), one per satellite epoch.
+#[cfg(test)]
 pub fn decode_satellite(
     columns: &[Option<Column>],
     codes: &[ObsCode],

@@ -62,6 +62,7 @@ const LABEL_V2_OBS_TYPES: &[u8] = b"# / TYPES OF OBSERV";
 const LABEL_V3_OBS_TYPES: &[u8] = b"SYS / # / OBS TYPES";
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum CrinexError {
     #[error("not a Compact RINEX file (no CRINEX VERS / TYPE record)")]
     NotCrinex,

@@ -40,7 +40,7 @@ along with LLI and SSI bytes.
 Absent values, including ones spelled as 0.000, are omitted.
 
 ```rust
-use srnx::rinex_header::ObsCode;
+use srnx::model::ObsCode;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bytes = std::fs::read("abmf1190.26o")?;
