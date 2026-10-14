@@ -5,9 +5,10 @@
 //! 1. ULEB128 epoch index (0 = before first epoch, 1 = between epoch 0 and 1, …).
 //! 2. Verbatim RINEX event record text, LF-terminated.
 //!
-//! Chunks are stored sequentially starting at the offset recorded in the
-//! SDIR's `evtf_offset` field.  A reader walks them until the next chunk's
-//! FOURCC is no longer `EVTF` (or the file is exhausted).
+//! The SDIR's `evtf_offset` field names the first `EVTF` chunk.  Chunks
+//! SHOULD be stored consecutively, but need not be, so
+//! [`SrnxFile::evtf_chunks`](crate::file::SrnxFile::evtf_chunks) reads every
+//! `EVTF` chunk in file order.
 
 use thiserror::Error;
 
@@ -20,6 +21,8 @@ pub enum EvtfError {
     Leb(#[from] LebError),
     #[error("EVTF chunk truncated reading epoch index")]
     Truncated,
+    #[error("EVTF text is not valid UTF-8")]
+    NotUtf8,
 }
 
 /// A parsed EVTF chunk.
@@ -38,12 +41,7 @@ pub fn parse(payload: &[u8]) -> Result<Evtf, EvtfError> {
     let epoch_index = read_uleb128(&mut cursor)?;
 
     // The remainder is verbatim RINEX event text.  Split into lines on LF.
-    let text_bytes = std::str::from_utf8(cursor).unwrap_or_else(|_| {
-        // If the text isn't valid UTF-8, fall back to lossy conversion.
-        // This shouldn't happen with valid RINEX, but be defensive.
-        let _ = cursor; // suppress unused warning
-        ""
-    });
+    let text_bytes = std::str::from_utf8(cursor).map_err(|_| EvtfError::NotUtf8)?;
 
     let text: Vec<String> = if text_bytes.is_empty() {
         Vec::new()
@@ -93,6 +91,11 @@ mod tests {
         let payload = b"\xE8\x07event at epoch 1000\n";
         let evtf = parse(payload).unwrap();
         assert_eq!(evtf.epoch_index, 1000);
+    }
+
+    #[test]
+    fn parse_not_utf8() {
+        assert_eq!(parse(b"\x00caf\xe9\n"), Err(EvtfError::NotUtf8));
     }
 
     #[test]

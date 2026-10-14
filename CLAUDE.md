@@ -111,6 +111,9 @@ These are easy to miss on a first read of `docs/Succinct_RINEX.md`:
   zero, encoded as ULEB 0).
 - Receiver clock offsets in `EPOC` are RLE'd as `(SLEB128 value × 1e12,
   ULEB128 count - 1)`. Trailing zeros may be omitted.
+- `EVTF` chunks only SHOULD be consecutive, so `SrnxFile::evtf_chunks`
+  reads every one in file order instead of walking from the `SDIR` offset
+  (which must name the first). A malformed event is an error, not skipped.
 
 RINEX text-format gotchas (all versions unless noted):
 

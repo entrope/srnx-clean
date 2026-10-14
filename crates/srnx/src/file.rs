@@ -62,8 +62,10 @@ pub enum FileError {
     Socd(#[from] SocdError),
     #[error("SOC2 chunk error: {0}")]
     Soc2(#[from] Soc2Error),
-    #[error("EVTF chunk error: {0}")]
-    Evtf(#[from] EvtfError),
+    #[error("EVTF chunk at file offset {offset}: {source}")]
+    Evtf { offset: u64, source: EvtfError },
+    #[error("SDIR gives EVTF offset {sdir}, but the first EVTF chunk is at {first}")]
+    EvtfOffset { sdir: u64, first: u64 },
     #[error("first chunk is {got:?}, expected SRNX")]
     NotSrnxFile { got: [u8; 4] },
     #[error("file truncated reading {what}")]
@@ -309,34 +311,35 @@ impl<'a> SrnxFile<'a> {
         Ok(soc2::parse(chunk.payload)?)
     }
 
-    /// Iterate all `EVTF` chunks starting at the offset recorded in the SDIR.
+    /// Parse every `EVTF` chunk, in file order, which keeps events at the
+    /// same epoch index in their original order.
     ///
-    /// EVTF chunks are stored consecutively; this method walks them until
-    /// a non-EVTF chunk is encountered.  Returns an empty iterator when
-    /// `evtf_offset` is zero.
-    pub fn evtf_chunks(
-        &self,
-        evtf_offset: u64,
-    ) -> impl Iterator<Item = Result<Evtf, FileError>> + '_ {
-        let mut offset = evtf_offset;
-        std::iter::from_fn(move || {
-            if offset == 0 {
-                return None;
-            }
-            let chunk = self.chunk_at_offset(offset)?;
-            if chunk.fourcc != EVTF_TAG {
-                return None;
-            }
-            // Compute the offset of the next chunk (FOURCC + payload + digest).
-            // We need to find the next chunk's offset.  Since chunks are stored
-            // sequentially, we look for the next chunk in our list.
-            let idx = self.chunks.iter().position(|c| c.file_offset == offset)?;
-            let next_offset = self.chunks.get(idx + 1).map_or(0, |c| c.file_offset);
-            offset = next_offset;
-
-            let evtf = evtf::parse(chunk.payload).ok()?;
-            Some(Ok(evtf))
-        })
+    /// The spec only says `EVTF` chunks SHOULD be stored consecutively, so
+    /// this reads all of them rather than walking from the SDIR's
+    /// `evtf_offset`, which must name the first one (or be zero if there
+    /// are none).
+    pub fn evtf_chunks(&self, evtf_offset: u64) -> Result<Vec<Evtf>, FileError> {
+        let chunks: Vec<&BodyChunk<'a>> = self
+            .chunks
+            .iter()
+            .filter(|c| c.fourcc == EVTF_TAG)
+            .collect();
+        let first = chunks.first().map_or(0, |c| c.file_offset);
+        if first != evtf_offset {
+            return Err(FileError::EvtfOffset {
+                sdir: evtf_offset,
+                first,
+            });
+        }
+        chunks
+            .into_iter()
+            .map(|c| {
+                evtf::parse(c.payload).map_err(|source| FileError::Evtf {
+                    offset: c.file_offset,
+                    source,
+                })
+            })
+            .collect()
     }
 
     /// Histogram of body-chunk FOURCCs (does not include the SRNX chunk).

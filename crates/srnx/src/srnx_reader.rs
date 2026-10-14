@@ -35,6 +35,8 @@ pub enum SrnxReadError {
     EpochRangeTooLarge,
     #[error("scaled observation value does not fit in 64 bits")]
     ValueOverflow,
+    #[error("EVTF chunk {index} (from 0): {reason}")]
+    BadEvent { index: usize, reason: &'static str },
 }
 
 /// List the satellites in an SRNX file's `SDIR` chunk, each with the
@@ -88,28 +90,7 @@ pub fn read(bytes: &[u8], filter: Option<SignalFilter<'_>>) -> Result<ObsFile, S
     // SDIR.
     let sdir = file.sdir()?.ok_or(SrnxReadError::NoSdir)?;
 
-    // EVTF → event records.  The text starts with the epoch line, whose
-    // flag is in column 29 (v2) or 32 (v3/v4); like the RINEX readers, keep
-    // only the lines after it.
-    let flag_col = if header.version.is_v3_or_later() {
-        31
-    } else {
-        28
-    };
-    let events: Vec<(usize, EventRecord)> = file
-        .evtf_chunks(sdir.evtf_offset)
-        .filter_map(std::result::Result::ok)
-        .map(|evtf| {
-            let epoch_index = usize::try_from(evtf.epoch_index).unwrap_or(usize::MAX);
-            let mut lines = evtf.text.iter().map(|l| l.trim_end_matches('\n'));
-            let flag = lines.next().map_or(0, |l| match byte_at(l, flag_col) {
-                b @ b'0'..=b'9' => b - b'0',
-                _ => 0,
-            });
-            let lines = lines.map(str::to_owned).collect();
-            (epoch_index, EventRecord { flag, lines })
-        })
-        .collect();
+    let events = events(&file, &header, sdir.evtf_offset, total_epochs)?;
 
     let mut observations: BTreeMap<(SatId, ObsCode), Vec<(usize, Obs)>> = BTreeMap::new();
     let mut masks = SignalMasks::new(filter);
@@ -190,6 +171,39 @@ pub fn read(bytes: &[u8], filter: Option<SignalFilter<'_>>) -> Result<ObsFile, S
 }
 
 /// Parse the file framing and check the file-level digest.
+/// Read the `EVTF` chunks as event records.  Each one's text starts with the
+/// epoch line, whose flag (1–6) is in column 29 (v2) or 32 (v3/v4); like the
+/// RINEX readers, keep only the lines after it.
+fn events(
+    file: &SrnxFile<'_>,
+    header: &Header,
+    evtf_offset: u64,
+    total_epochs: usize,
+) -> Result<Vec<(usize, EventRecord)>, SrnxReadError> {
+    let flag_col = if header.version.is_v3_or_later() {
+        31
+    } else {
+        28
+    };
+    let mut events = Vec::new();
+    for (index, evtf) in file.evtf_chunks(evtf_offset)?.into_iter().enumerate() {
+        let bad = |reason| SrnxReadError::BadEvent { index, reason };
+        let epoch_index = usize::try_from(evtf.epoch_index)
+            .ok()
+            .filter(|&i| i <= total_epochs)
+            .ok_or_else(|| bad("epoch index is past the last epoch"))?;
+        let mut lines = evtf.text.iter().map(|l| l.trim_end_matches('\n'));
+        let epoch_line = lines.next().ok_or_else(|| bad("no epoch line"))?;
+        let flag = match byte_at(epoch_line, flag_col) {
+            b @ b'1'..=b'6' => b - b'0',
+            _ => return Err(bad("epoch flag is not 1 to 6")),
+        };
+        let lines = lines.map(str::to_owned).collect();
+        events.push((epoch_index, EventRecord { flag, lines }));
+    }
+    Ok(events)
+}
+
 fn open(bytes: &[u8]) -> Result<SrnxFile<'_>, SrnxReadError> {
     let file = SrnxFile::parse(bytes)?;
     if !file.file_digest_ok {
@@ -351,6 +365,93 @@ mod tests {
             EpochChunkKind::Epo2.units_per_second(),
         );
         assert_eq!(times[1] - times[0], 1);
+    }
+
+    /// Read the events of `rinex211_flag1_flag6.srnx` (two epochs, then two
+    /// consecutive `EVTF` chunks: flag 1 with 14 lines and flag 6 with one)
+    /// after `edit` changes its chunks, which it gets with the indexes of
+    /// the two `EVTF` chunks.
+    fn flag1_flag6_events(
+        edit: impl for<'a> FnOnce(&mut Vec<crate::file::BodyChunk<'a>>, [usize; 2]),
+    ) -> Result<Vec<(usize, EventRecord)>, SrnxReadError> {
+        let bytes = crate::test_data("rinex211_flag1_flag6.srnx");
+        let mut file = SrnxFile::parse(&bytes).unwrap();
+        let header = rinex_header::parse(file.rhdr_payload().unwrap()).unwrap();
+        let evtf_offset = file.sdir().unwrap().unwrap().evtf_offset;
+        let evtf: Vec<usize> = (0..file.chunks.len())
+            .filter(|&i| file.chunks[i].fourcc == *b"EVTF")
+            .collect();
+        assert_eq!(evtf.len(), 2);
+        assert_eq!(evtf[1], evtf[0] + 1);
+        edit(&mut file.chunks, [evtf[0], evtf[1]]);
+        events(&file, &header, evtf_offset, 2)
+    }
+
+    /// Replace the payload of chunk `i` with `edit` applied to a copy of it.
+    fn edit_payload(chunks: &mut [crate::file::BodyChunk<'_>], i: usize, edit: fn(&mut Vec<u8>)) {
+        let mut payload = chunks[i].payload.to_vec();
+        edit(&mut payload);
+        chunks[i].payload = Box::leak(payload.into_boxed_slice());
+    }
+
+    #[test]
+    fn events_from_evtf() {
+        let events = flag1_flag6_events(|_, _| {}).unwrap();
+        let summary: Vec<(usize, u8, usize)> = events
+            .iter()
+            .map(|(i, e)| (*i, e.flag, e.lines.len()))
+            .collect();
+        assert_eq!(summary, [(1, 1, 14), (1, 6, 1)]);
+        assert_eq!(events[0].1.lines[0].trim(), "G13");
+        assert_eq!(events[1].1.lines[0], "                         1.000 1");
+    }
+
+    #[test]
+    fn events_need_not_be_consecutive() {
+        // Move the second EVTF chunk after the chunk that followed it.
+        let events = flag1_flag6_events(|chunks, [_, b]| chunks.swap(b, b + 1)).unwrap();
+        let flags: Vec<u8> = events.iter().map(|(_, e)| e.flag).collect();
+        assert_eq!(flags, [1, 6]);
+    }
+
+    #[test]
+    fn sdir_must_point_at_the_first_evtf() {
+        let err = flag1_flag6_events(|chunks, [a, _]| chunks[a].fourcc = *b"XXXX");
+        assert!(matches!(
+            err,
+            Err(SrnxReadError::File(FileError::EvtfOffset { .. }))
+        ));
+    }
+
+    #[test]
+    fn bad_events_are_errors() {
+        let bad = |result: Result<_, SrnxReadError>| match result {
+            Err(SrnxReadError::BadEvent { index, reason }) => (index, reason),
+            other => panic!("expected BadEvent, got {other:?}"),
+        };
+        let err = flag1_flag6_events(|chunks, [_, b]| {
+            edit_payload(chunks, b, |p| p[0] = 3);
+        });
+        assert_eq!(bad(err), (1, "epoch index is past the last epoch"));
+        let err = flag1_flag6_events(|chunks, [a, _]| edit_payload(chunks, a, |p| p.truncate(1)));
+        assert_eq!(bad(err), (0, "no epoch line"));
+        // Flag 6 in column 29 of " 24 10  1  0  0  2.0000000  6  1G01".
+        let err = flag1_flag6_events(|chunks, [_, b]| {
+            edit_payload(chunks, b, |p| {
+                assert_eq!(p[1 + 28], b'6');
+                p[1 + 28] = b'7';
+            });
+        });
+        assert_eq!(bad(err), (1, "epoch flag is not 1 to 6"));
+
+        let err = flag1_flag6_events(|chunks, [a, _]| edit_payload(chunks, a, |p| p[5] = 0xFF));
+        assert!(matches!(
+            err,
+            Err(SrnxReadError::File(FileError::Evtf {
+                source: crate::evtf::EvtfError::NotUtf8,
+                ..
+            }))
+        ));
     }
 
     #[test]
