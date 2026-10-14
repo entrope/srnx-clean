@@ -38,7 +38,8 @@ This returns an `srnx::model::ObsFile`, which contains:
 The map does not preserve the original order of satellites within an epoch.
 Observation values are returned as i64 integers counting milli-units,
 along with LLI and SSI bytes.
-Absent values, including ones spelled as 0.000, are omitted.
+Absent (blank) values are omitted; a value written as 0.000 is kept as
+zero, with its LLI and SSI.
 
 ```rust,no_run
 use srnx::model::ObsCode;
@@ -56,8 +57,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 This crate builds a `srnx-diff` executable that compares two RINEX-ish
 files and reports whether they are semantically different.
 It works across formats, and ignores details that the standards say are
-not relevant (end-of-line conventions, trailing whitespace, observations
-that are blank vs 0.000, order of satellites per epoch, and so forth).
+not relevant (end-of-line conventions, trailing whitespace, order of
+satellites per epoch, and so forth).
+An observation written as 0.000 differs from a blank one, and an LLI or
+SSI of 0 differs from a blank one.
 
 Usage:
 

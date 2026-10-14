@@ -114,9 +114,12 @@ These are easy to miss on a first read of `docs/Succinct_RINEX.md`:
 
 RINEX text-format gotchas (all versions unless noted):
 
-- "Missing observations are written as 0.0 or blanks": a value of exactly
-  zero is absent, and `rnx2srnx` drops it (with its LLI/SSI). The shared
-  F14.3 field parser in `rinex2_obs.rs` treats zero as absent for v2 and v3.
+- "Missing observations are written as 0.0 or blanks", but the SRNX spec
+  (§Zero Values) says a written zero SHOULD stay zero: zero is a real value
+  for LLIs and for Doppler. `rnx2srnx` keeps a written zero with its
+  LLI/SSI, and drops a blank value (and any flags with it, with a warning).
+  The shared F14.3 field parser in `rinex2_obs.rs` does the same for v2
+  and v3, and `srnx-diff` compares flags exactly (`0` is not blank).
 - SRNX keeps flag-1 (power failure) and flag-6 (cycle slip) records only in
   `EVTF`, never in `EPOC`/`SATE`/`SOCD`/`SOC2`. Both RINEX readers turn them
   into events, not observation epochs.

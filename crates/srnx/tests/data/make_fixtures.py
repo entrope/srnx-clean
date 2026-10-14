@@ -156,9 +156,9 @@ FIXTURES = [
 
 
 # Hand-written fixtures (not excerpts) that also get an SRNX version.
-# rnx2srnx rejects crinex_v211_features, and crinex_v304_features has a
-# flags-only field that rnx2srnx keeps but our RINEX reader drops.
+# rnx2srnx rejects crinex_v211_features.
 SMALL = [
+    "crinex_v304_features",
     "rinex211_flag1_flag6",
     "rinex402_picoseconds",
 ]

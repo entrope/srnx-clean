@@ -1,7 +1,7 @@
-SRNX: version 1.2, chunk digest=2, file digest=5, SDIR offset=2583
+SRNX: version 1.2, chunk digest=2, file digest=5, SDIR offset=2592
 RHDR: 1606 bytes
   Epochs: 7, Span: interval=1.000000023455 s, count=2, 2024-10-01 00:00:00.000000100001
-SDIR: 2583 offset, 4 satellites
+SDIR: 2592 offset, 4 satellites
 
 === Aggregate Summary (1 files) ===
 

@@ -1,5 +1,5 @@
 3.1                 COMPACT RINEX FORMAT                    CRINEX VERS   / TYPE
-RNX2CRX ver.4.2.0                       14-Oct-26 01:00     CRINEX PROG / DATE
+RNX2CRX ver.4.2.0                       01-Jan-26 00:00     CRINEX PROG / DATE
      4.02           OBSERVATION DATA    M                   RINEX VERSION / TYPE
 srnx-clean fixture  srnx-clean          20241001 000000 UTC PGM / RUN BY / DATE
 Synthetic RINEX 4.02 file exercising the optional 1X,I5.5   COMMENT
@@ -58,7 +58,7 @@ EXTERNAL EVENT AT 00:00:01.500000050000                     COMMENT
 0 0 0 0
                     2             4            E11R03
 -199992 00007
-0 0 0 0
-0 0 0 0
-3&25180323300 3&132324752610 3&-456783 3&42750 &7&7&7&&
+0 0 1234561 0      &
+0 0 -987660 0
+3&25180323300 3&132324752610 3&0 3&42750 &7&70&&&
 3&21345679776 3&114062358917 3&2345684 3&40500 &7&7&7&&

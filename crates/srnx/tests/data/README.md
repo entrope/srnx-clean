@@ -14,13 +14,16 @@ below; those are under their sources' terms.
 | --- | --- |
 | `crinex_v211_features` | RINEX 2.11 and CRINEX 1.0 corner cases |
 | `crinex_v304_features` | RINEX 3.04 and CRINEX 3.0 corner cases |
-| `rinex211_flag1_flag6` | Power-failure and cycle-slip records |
-| `rinex402_picoseconds` | RINEX 4.02 picosecond epochs, CRINEX 3.1 |
+| `rinex211_flag1_flag6` | Power-failure and cycle-slip records, zero values |
+| `rinex402_picoseconds` | RINEX 4.02 picosecond epochs, CRINEX 3.1, zero values |
 | `rinex402_table_a4_variants` | RINEX 4.02 epoch-record variants |
 
 These were written for this project. Each `.crx` was made from the `.rnx` by
 `RNX2CRX` (RNXCMP 4.2.0), and each `.crx.rnx` is the output of `CRX2RNX`
-4.2.0 on the `.crx`.
+4.2.0 on the `.crx`. `make_fixtures.py` makes `.srnx` and `.scan` files for
+`crinex_v304_features`, `rinex211_flag1_flag6` and `rinex402_picoseconds`;
+`rnx2srnx` rejects `crinex_v211_features`, and `rinex402_table_a4_variants`
+has a truncated epoch.
 
 ## Excerpts of station data
 

@@ -590,8 +590,8 @@ mod tests {
             obs(&f, "G09", "C1C").last(),
             Some(&(3, 23_507_272_372, b' ', b' '))
         );
-        // A zero value is a missing observation, even with an SSI.
-        assert!(obs(&f, "G09", "L1W").iter().all(|&(i, ..)| i < 3));
+        // A written zero is an observation, with its SSI.
+        assert_eq!(obs(&f, "G09", "L1W").last(), Some(&(3, 0, b' ', b'7')));
         // Satellite line with no observations at all.
         assert!(obs(&f, "G12", "C1C").iter().all(|&(i, ..)| i < 4));
         // No obs types declared for BeiDou: the record is ignored.
@@ -644,6 +644,12 @@ mod tests {
         assert_eq!(per_epoch, vec![4, 4, 3, 4, 4, 2, 4]);
         assert_eq!(obs(&f, "G12", "L1C")[3], (3, 109_782_559_341, b'1', b'7'));
         assert_eq!(obs(&f, "R03", "D1C")[0], (0, 2_345_678, b' ', b'7'));
+
+        // Written zeros are observations, with their flags.
+        let last = |sat| obs(&f, sat, "D1C").last().copied();
+        assert_eq!(last("G05"), Some((6, 0, b' ', b' ')));
+        assert_eq!(last("G12"), Some((6, 0, b' ', b'7')));
+        assert_eq!(last("E11"), Some((6, 0, b'0', b' ')));
     }
 
     #[test]

@@ -14,7 +14,7 @@ Chunk totals:
   SOC2: 4
     predictor kinds: none 4, value 0, rate 0, extended 0
     SSI references: 0
-    delta orders (predictor kind 0): 0 4 0 0 0 0 0 0
+    delta orders (predictor kind 0): 2 2 0 0 0 0 0 0
     delta orders (predictor kind 1): 0 0 0 0 0 0 0 0
     delta orders (predictor kind 2): 0 0 0 0 0 0 0 0
 

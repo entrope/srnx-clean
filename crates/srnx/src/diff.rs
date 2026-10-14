@@ -44,23 +44,21 @@ pub fn epochs_eq(a: &EpochRecord, b: &EpochRecord) -> bool {
         && a.extra_ps == b.extra_ps
 }
 
-/// Treat `b'0'` and `b' '` as equivalent (both mean "no information").
-#[inline]
-#[must_use]
-pub fn norm_indicator(b: u8) -> u8 {
-    if b == b'0' {
-        b' '
-    } else {
-        b
-    }
+/// Format an observation as `value=<milli-units> lli='<c>' ssi='<c>'`.
+fn fmt_obs(o: Obs) -> String {
+    format!(
+        "value={} lli={:?} ssi={:?}",
+        o.value,
+        char::from(o.lli),
+        char::from(o.ssi)
+    )
 }
 
-/// Compare two observations on value, LLI, and SSI.
+/// Compare two observations on value, LLI, and SSI.  An indicator of `0`
+/// differs from a blank one: SRNX keeps them apart.
 #[must_use]
 pub fn obs_eq(a: Obs, b: Obs) -> bool {
-    a.value == b.value
-        && norm_indicator(a.lli) == norm_indicator(b.lli)
-        && norm_indicator(a.ssi) == norm_indicator(b.ssi)
+    a == b
 }
 
 // ---------------------------------------------------------------------------
@@ -81,6 +79,7 @@ pub fn compare(a: &ObsFile, b: &ObsFile, label_a: &str, label_b: &str) -> Vec<St
 
     compare_headers(a, b, label_a, label_b, &mut out);
     compare_epochs(a, b, label_a, label_b, &mut out);
+    compare_events(a, b, label_a, label_b, &mut out);
     compare_observations(a, b, label_a, label_b, &mut out);
     out
 }
@@ -148,6 +147,39 @@ fn compare_epochs(a: &ObsFile, b: &ObsFile, label_a: &str, label_b: &str, out: &
     }
 }
 
+/// Events must sit at the same positions, with the same flags and lines
+/// (ignoring trailing whitespace, which SRNX does not keep).
+fn compare_events(a: &ObsFile, b: &ObsFile, label_a: &str, label_b: &str, out: &mut Vec<String>) {
+    let na = a.events.len();
+    let nb = b.events.len();
+    if na != nb {
+        out.push(format!("event count: {label_a}={na}  {label_b}={nb}"));
+    }
+
+    for (k, ((ia, ea), (ib, eb))) in a.events.iter().zip(&b.events).enumerate() {
+        if out.len() >= MAX_DIFFS {
+            break;
+        }
+        if ia != ib {
+            out.push(format!("event[{k}] position: epoch[{ia}] vs epoch[{ib}]"));
+        } else if ea.flag != eb.flag {
+            out.push(format!("event[{k}] flag: {} vs {}", ea.flag, eb.flag));
+        } else if !ea
+            .lines
+            .iter()
+            .map(|l| l.trim_end())
+            .eq(eb.lines.iter().map(|l| l.trim_end()))
+        {
+            out.push(format!(
+                "event[{k}] (flag {}) text differs: {label_a}={} lines {label_b}={} lines",
+                ea.flag,
+                ea.lines.len(),
+                eb.lines.len()
+            ));
+        }
+    }
+}
+
 fn compare_observations(
     a: &ObsFile,
     b: &ObsFile,
@@ -209,12 +241,10 @@ fn compare_series(
             std::cmp::Ordering::Equal => {
                 if !obs_eq(oa, ob) {
                     out.push(format!(
-                        "{prefix} epoch[{ea}] {}: value mismatch: {}(value={})  {}(value={})",
+                        "{prefix} epoch[{ea}] {}: mismatch: {label_a}({})  {label_b}({})",
                         fmt_epoch(&file_a.epochs[ea]),
-                        label_a,
-                        oa.value,
-                        label_b,
-                        ob.value,
+                        fmt_obs(oa),
+                        fmt_obs(ob),
                     ));
                 }
                 ia += 1;
@@ -248,6 +278,7 @@ fn compare_series(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{EventRecord, HeaderText, ObsCode, SatId, SatSystem};
 
     #[test]
     fn fmt_epoch_output() {
@@ -272,24 +303,89 @@ mod tests {
     }
 
     #[test]
-    fn norm_indicator_equivalence() {
-        assert_eq!(norm_indicator(b'0'), b' ');
-        assert_eq!(norm_indicator(b' '), b' ');
-        assert_eq!(norm_indicator(b'1'), b'1');
-    }
-
-    #[test]
     fn obs_eq_lli_zero_vs_space() {
         let a = Obs {
             value: 100,
             lli: b'0',
             ssi: b' ',
         };
-        let b = Obs {
-            value: 100,
-            lli: b' ',
-            ssi: b' ',
+        let b = Obs { lli: b' ', ..a };
+        assert!(obs_eq(a, a));
+        assert!(!obs_eq(a, b));
+    }
+
+    fn file(events: Vec<(usize, EventRecord)>, value: Option<i64>) -> ObsFile {
+        let epoch = EpochRecord {
+            year: 2024,
+            month: 10,
+            day: 1,
+            hour: 0,
+            minute: 0,
+            seconds_e7: 0,
+            extra_ps: 0,
+            flag: 0,
+            clock_offset_e12: 0,
         };
-        assert!(obs_eq(a, b));
+        let key = (
+            SatId::new(SatSystem::GPS, 1),
+            ObsCode::from_v3("D1C").unwrap(),
+        );
+        let obs = |value| {
+            vec![(
+                0,
+                Obs {
+                    value,
+                    lli: b' ',
+                    ssi: b' ',
+                },
+            )]
+        };
+        ObsFile {
+            header: HeaderText::from_text("END OF HEADER\n"),
+            epochs: vec![epoch],
+            events,
+            observations: value.map(|v| (key, obs(v))).into_iter().collect(),
+        }
+    }
+
+    #[test]
+    fn zero_differs_from_absent() {
+        let zero = file(Vec::new(), Some(0));
+        assert_eq!(compare(&zero, &zero, "a", "b"), [] as [String; 0]);
+        let diffs = compare(&zero, &file(Vec::new(), None), "a", "b");
+        assert_eq!(diffs, ["G01/D1C: only in a"]);
+    }
+
+    #[test]
+    fn events_are_compared() {
+        let event = |at, flag, line: &str| {
+            (
+                at,
+                EventRecord {
+                    flag,
+                    lines: vec![line.to_owned()],
+                },
+            )
+        };
+        let a = file(vec![event(1, 4, "COMMENT")], Some(1));
+        let same = file(vec![event(1, 4, "COMMENT   ")], Some(1));
+        assert_eq!(compare(&a, &same, "a", "b"), [] as [String; 0]);
+        for (b, want) in [
+            (file(Vec::new(), Some(1)), "event count: a=1  b=0"),
+            (
+                file(vec![event(0, 4, "COMMENT")], Some(1)),
+                "event[0] position: epoch[1] vs epoch[0]",
+            ),
+            (
+                file(vec![event(1, 3, "COMMENT")], Some(1)),
+                "event[0] flag: 4 vs 3",
+            ),
+            (
+                file(vec![event(1, 4, "COMMENTS")], Some(1)),
+                "event[0] (flag 4) text differs: a=1 lines b=1 lines",
+            ),
+        ] {
+            assert_eq!(compare(&a, &b, "a", "b"), [want]);
+        }
     }
 }

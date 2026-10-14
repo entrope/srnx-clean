@@ -1,5 +1,5 @@
 1.0                 COMPACT RINEX FORMAT                    CRINEX VERS   / TYPE
-RNX2CRX ver.4.2.0                       14-Oct-26 01:00     CRINEX PROG / DATE
+RNX2CRX ver.4.2.0                       01-Jan-26 00:00     CRINEX PROG / DATE
      2.11           OBSERVATION DATA    G (GPS)             RINEX VERSION / TYPE
 srnx-clean          srnx-clean          20241001 000000     PGM / RUN BY / DATE
 Synthetic RINEX 2.11 file with flag-1 and flag-6 records.   COMMENT
@@ -37,4 +37,4 @@ TEST                                                        MARKER NAME
 &24 10  1  0  0  2.0000000  0  2G01G02
 
 3&20001002000 3&100005010000  6 6
-3&20002002000 3&100010010000  6 6
+3&0 3&0   0

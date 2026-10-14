@@ -585,9 +585,10 @@ fn parse_obs_field(line: &str, slot: usize) -> Option<Obs> {
 /// offset `start`.  Shared with the RINEX v3/v4 reader, whose fields follow
 /// a 3-byte satellite identifier.
 ///
-/// Returns `None` if the value is blank or zero: every RINEX version says
-/// "missing observations are written as 0.0 or blanks", and `rnx2srnx`
-/// likewise stores a zero value as absent (dropping any LLI/SSI with it).
+/// Returns `None` if the value has no digits, dropping any LLI/SSI with it
+/// as `rnx2srnx` does.  RINEX says "missing observations are written as 0.0
+/// or blanks", but zero is often a real value (an LLI, or the Doppler of a
+/// geostationary satellite), so SRNX keeps a written zero as zero.
 ///
 /// F14.3 values have exactly 3 decimal places.  We parse them directly as
 /// integers by skipping the decimal point — no `String` allocation and no
@@ -596,18 +597,22 @@ pub(crate) fn parse_obs_at(line: &str, start: usize) -> Option<Obs> {
     // Parse the 14-byte F14.3 value field as an integer (×1000 milliunits).
     let mut acc: i64 = 0;
     let mut negative = false;
+    let mut digits = false;
 
     for i in 0..14 {
         let b = byte_at(line, start + i);
         match b {
             b'-' => negative = true,
-            b'0'..=b'9' => acc = acc * 10 + i64::from(b - b'0'),
+            b'0'..=b'9' => {
+                acc = acc * 10 + i64::from(b - b'0');
+                digits = true;
+            }
             b'.' | b' ' | b'+' => {}
             _ => return None, // unexpected character → treat as absent
         }
     }
 
-    if acc == 0 {
+    if !digits {
         return None;
     }
 
@@ -674,11 +679,22 @@ mod tests {
     }
 
     #[test]
-    fn parse_obs_field_zero_is_absent() {
-        // "Missing observations are written as 0.0 or blanks."
-        let line = "         0.000 7          -.000  ";
-        assert!(parse_obs_field(line, 0).is_none());
-        assert!(parse_obs_field(line, 1).is_none());
+    fn parse_obs_field_zero_is_present() {
+        // A written zero is a value, with its LLI/SSI; a blank value is
+        // absent even with flags.
+        let line = [
+            "         0.000 7",
+            "         -.0000 ",
+            "             .  ",
+            "              81",
+        ]
+        .concat();
+        let line = line.as_str();
+        let zero = |lli, ssi| Some(Obs { value: 0, lli, ssi });
+        assert_eq!(parse_obs_field(line, 0), zero(b' ', b'7'));
+        assert_eq!(parse_obs_field(line, 1), zero(b'0', b' '));
+        assert!(parse_obs_field(line, 2).is_none());
+        assert!(parse_obs_field(line, 3).is_none());
     }
 
     #[test]
@@ -883,6 +899,27 @@ mod tests {
         let got: Vec<(usize, i64)> = g01_c1.iter().map(|&(i, o)| (i, o.value)).collect();
         assert_eq!(got, vec![(0, 20_001_000_000), (1, 20_001_002_000)]);
         assert!(f.observations.keys().all(|(s, _)| s.prn <= 2));
+
+        // Written zeros are observations, with their flags.
+        let g02 = |code| {
+            let key = (
+                SatId::new(SatSystem::GPS, 2),
+                ObsCode::from_v2(code).unwrap(),
+            );
+            f.observations[&key].last().copied()
+        };
+        let zero = |lli| {
+            Some((
+                1,
+                Obs {
+                    value: 0,
+                    lli,
+                    ssi: b' ',
+                },
+            ))
+        };
+        assert_eq!(g02("C1"), zero(b' '));
+        assert_eq!(g02("L1"), zero(b'0'));
     }
 
     // ---- fixture tests -----------------------------------------------

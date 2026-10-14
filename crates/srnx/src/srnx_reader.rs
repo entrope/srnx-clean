@@ -11,6 +11,7 @@ use crate::file::{FileError, SrnxFile};
 use crate::model::{
     Catalog, EpochRecord, EventRecord, Obs, ObsFile, SatId, SignalFilter, SignalMasks,
 };
+use crate::rinex2_obs::byte_at;
 use crate::rinex_header::{self, Header, HeaderError, HeaderText, ObsCode, SatSystem};
 use crate::soc2::{Column, SatelliteColumns};
 use crate::socd::ABSENT;
@@ -87,19 +88,26 @@ pub fn read(bytes: &[u8], filter: Option<SignalFilter<'_>>) -> Result<ObsFile, S
     // SDIR.
     let sdir = file.sdir()?.ok_or(SrnxReadError::NoSdir)?;
 
-    // EVTF → event records.
+    // EVTF → event records.  The text starts with the epoch line, whose
+    // flag is in column 29 (v2) or 32 (v3/v4); like the RINEX readers, keep
+    // only the lines after it.
+    let flag_col = if header.version.is_v3_or_later() {
+        31
+    } else {
+        28
+    };
     let events: Vec<(usize, EventRecord)> = file
         .evtf_chunks(sdir.evtf_offset)
         .filter_map(std::result::Result::ok)
         .map(|evtf| {
             let epoch_index = usize::try_from(evtf.epoch_index).unwrap_or(usize::MAX);
-            (
-                epoch_index,
-                EventRecord {
-                    flag: 0, // extracted from text if needed; stored as-is for now
-                    lines: evtf.text,
-                },
-            )
+            let mut lines = evtf.text.iter().map(|l| l.trim_end_matches('\n'));
+            let flag = lines.next().map_or(0, |l| match byte_at(l, flag_col) {
+                b @ b'0'..=b'9' => b - b'0',
+                _ => 0,
+            });
+            let lines = lines.map(str::to_owned).collect();
+            (epoch_index, EventRecord { flag, lines })
         })
         .collect();
 
