@@ -39,7 +39,7 @@ Observation values are returned as i64 integers counting milli-units,
 along with LLI and SSI bytes.
 Absent values, including ones spelled as 0.000, are omitted.
 
-```rust
+```rust,no_run
 use srnx::model::ObsCode;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

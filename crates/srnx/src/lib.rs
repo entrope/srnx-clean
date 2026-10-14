@@ -1,7 +1,6 @@
-//! Clean-room reader for the Succinct RINEX (SRNX) format, RINEX v2, v3 and
-//! v4 observation files, and Compact RINEX (Hatanaka) files.
+#![doc = include_str!("../README.md")]
 //!
-//! See `CLAUDE.md` and `PLAN.md` at the workspace root for scope and roadmap.
+//! ## API stability
 //!
 //! The public API is [`reader`] and [`model`].  The hidden modules are
 //! format internals, public only for `srnx-diff` and the integration tests,
