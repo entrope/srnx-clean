@@ -1,11 +1,15 @@
 [package]
 name = "srnx-diff"
-version = "0.0.0"
+version = "0.1.0-rc.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Semantic comparison CLI for SRNX and RINEX observation files"
+readme = "../../README.md"
+keywords = ["gnss", "rinex", "srnx", "crinex", "diff"]
+categories = ["science::geo", "command-line-utilities"]
+publish = false
 
 [[bin]]
 name = "srnx-diff"
