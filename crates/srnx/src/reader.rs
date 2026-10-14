@@ -22,6 +22,8 @@ pub enum ReadError {
     Rinex2(#[from] Rinex2Error),
     #[error(transparent)]
     Rinex3(#[from] Rinex3Error),
+    #[error("not an SRNX, Compact RINEX or RINEX observation file")]
+    UnrecognizedFormat,
 }
 
 /// An observation file format.
@@ -37,20 +39,28 @@ pub enum Format {
 }
 
 impl Format {
-    /// Detect the format from a file's contents.  Anything that is not
-    /// SRNX, Compact RINEX, or RINEX v3 or later is taken to be RINEX v2.
+    /// Detect the format from a file's contents, or `None` if the file
+    /// does not start like any supported format.
+    ///
+    /// This looks only at the start of the file: the `SRNX` FOURCC, or a
+    /// first line with the `CRINEX VERS   / TYPE` or `RINEX VERSION / TYPE`
+    /// label.  A RINEX file of another type (navigation, meteorological, ...)
+    /// is detected as RINEX and rejected by the reader.
     #[must_use]
-    pub fn detect(bytes: &[u8]) -> Self {
+    pub fn detect(bytes: &[u8]) -> Option<Self> {
         if bytes.starts_with(b"SRNX") {
-            Self::Srnx
+            Some(Self::Srnx)
         } else if crinex::is_crinex(bytes) {
-            Self::Crinex
-        } else if rinex_header::sniff_version(bytes)
-            .is_some_and(rinex_header::Version::is_v3_or_later)
-        {
-            Self::Rinex3
+            Some(Self::Crinex)
+        } else if starts_with_rinex_version(bytes) {
+            if rinex_header::sniff_version(bytes).is_some_and(rinex_header::Version::is_v3_or_later)
+            {
+                Some(Self::Rinex3)
+            } else {
+                Some(Self::Rinex2)
+            }
         } else {
-            Self::Rinex2
+            None
         }
     }
 
@@ -94,10 +104,26 @@ impl Format {
     }
 }
 
+/// `true` if the first line of `bytes` is a `RINEX VERSION / TYPE` record:
+/// no line break in columns 1–60, the label in columns 61–80, then a line
+/// break.
+fn starts_with_rinex_version(bytes: &[u8]) -> bool {
+    let Some(content) = bytes.get(..60) else {
+        return false;
+    };
+    !content.iter().any(|&b| b == b'\n' || b == b'\r')
+        && bytes[60..].starts_with(b"RINEX VERSION / TYPE")
+        && matches!(bytes.get(80..), Some([b'\n', ..] | [b'\r', b'\n', ..]))
+}
+
+fn detect(bytes: &[u8]) -> Result<Format, ReadError> {
+    Format::detect(bytes).ok_or(ReadError::UnrecognizedFormat)
+}
+
 /// List the satellites and signals of an observation file in any supported
 /// format; see [`Catalog`].
 pub fn catalog(bytes: &[u8]) -> Result<Catalog, ReadError> {
-    Format::detect(bytes).catalog(bytes)
+    detect(bytes)?.catalog(bytes)
 }
 
 /// Read an observation file in any supported format.
@@ -108,7 +134,7 @@ pub fn catalog(bytes: &[u8]) -> Result<Catalog, ReadError> {
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub fn read(bytes: &[u8]) -> Result<ObsFile, ReadError> {
-    Format::detect(bytes).read(bytes)
+    detect(bytes)?.read(bytes)
 }
 
 /// Read an observation file in any supported format, keeping only the
@@ -133,5 +159,87 @@ pub fn read_filtered(
     bytes: &[u8],
     filter: impl FnMut(SatId, ObsCode) -> bool,
 ) -> Result<ObsFile, ReadError> {
-    Format::detect(bytes).read_filtered(bytes, filter)
+    detect(bytes)?.read_filtered(bytes, filter)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A first line with `content` in columns 1–60 and `label` in 61–80.
+    fn line(content: &str, label: &str) -> String {
+        format!("{content:<60}{label:<20}")
+    }
+
+    #[test]
+    fn detects_rinex_from_first_line() {
+        let v2 = line(
+            "     2.11           OBSERVATION DATA    G",
+            "RINEX VERSION / TYPE",
+        );
+        let v3 = line(
+            "     3.04           OBSERVATION DATA    M",
+            "RINEX VERSION / TYPE",
+        );
+        let v4 = line(
+            "     4.02           OBSERVATION DATA    M",
+            "RINEX VERSION / TYPE",
+        );
+        assert_eq!(
+            Format::detect(format!("{v2}\n").as_bytes()),
+            Some(Format::Rinex2)
+        );
+        assert_eq!(
+            Format::detect(format!("{v2}\r\n").as_bytes()),
+            Some(Format::Rinex2)
+        );
+        assert_eq!(
+            Format::detect(format!("{v3}\n").as_bytes()),
+            Some(Format::Rinex3)
+        );
+        assert_eq!(
+            Format::detect(format!("{v4}\r\n").as_bytes()),
+            Some(Format::Rinex3)
+        );
+        // An unreadable version number is left for the v2 reader to report.
+        let bad = line(
+            "     x.yz           OBSERVATION DATA    G",
+            "RINEX VERSION / TYPE",
+        );
+        assert_eq!(
+            Format::detect(format!("{bad}\n").as_bytes()),
+            Some(Format::Rinex2)
+        );
+    }
+
+    #[test]
+    fn rejects_files_not_starting_with_a_version_record() {
+        let v3 = line(
+            "     3.04           OBSERVATION DATA    M",
+            "RINEX VERSION / TYPE",
+        );
+        let cases: [Vec<u8>; 8] = [
+            b"".to_vec(),
+            b"hello world\n".to_vec(),
+            vec![0xff; 200],
+            b"BZ3v1\0\0\xf0\x1f".to_vec(),
+            // No line break after the label.
+            v3.clone().into_bytes(),
+            format!("{v3}   \n").into_bytes(),
+            // Line break before column 61.
+            format!("\n{v3}\n").into_bytes(),
+            // Version record that is not the first line.
+            format!("{}\n{v3}\n", line("", "COMMENT")).into_bytes(),
+        ];
+        for bytes in &cases {
+            assert_eq!(
+                Format::detect(bytes),
+                None,
+                "{:?}",
+                String::from_utf8_lossy(bytes)
+            );
+            assert!(matches!(read(bytes), Err(ReadError::UnrecognizedFormat)));
+            assert!(matches!(catalog(bytes), Err(ReadError::UnrecognizedFormat)));
+        }
+    }
 }

@@ -5,7 +5,7 @@ use srnx::digest::DigestId;
 use srnx::epoc;
 use srnx::file::SrnxFile;
 use srnx::model::ObsFile;
-use srnx::reader::Format;
+use srnx::reader::{Format, ReadError};
 use srnx::rinex_header;
 
 fn main() -> ExitCode {
@@ -83,7 +83,7 @@ fn load_obs_file(path: &str) -> Result<ObsFile, Box<dyn std::error::Error>> {
     {
         Format::Srnx
     } else {
-        Format::detect(&bytes)
+        Format::detect(&bytes).ok_or(ReadError::UnrecognizedFormat)?
     };
     Ok(format.read(&bytes)?)
 }

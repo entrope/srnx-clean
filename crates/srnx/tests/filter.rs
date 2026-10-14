@@ -144,8 +144,8 @@ fn rinex_catalogs_agree_across_formats() {
         try_load("ctbk1830.22d"),
         try_load("ctbk1830.srnx"),
     ) {
-        assert_eq!(Format::detect(&rnx), Format::Rinex2);
-        assert_eq!(Format::detect(&crx), Format::Crinex);
+        assert_eq!(Format::detect(&rnx), Some(Format::Rinex2));
+        assert_eq!(Format::detect(&crx), Some(Format::Crinex));
         let catalog = reader::catalog(&rnx).unwrap();
         assert_eq!(reader::catalog(&crx).unwrap(), catalog);
         let [(system, codes)] = catalog.codes_by_system.as_slice() else {
@@ -167,7 +167,7 @@ fn rinex_catalogs_agree_across_formats() {
         try_load("abmf.crx"),
         try_load("abmf.srnx"),
     ) {
-        assert_eq!(Format::detect(&rnx), Format::Rinex3);
+        assert_eq!(Format::detect(&rnx), Some(Format::Rinex3));
         let catalog = reader::catalog(&rnx).unwrap();
         assert_eq!(catalog.satellites, None);
         assert_eq!(reader::catalog(&crx).unwrap(), catalog);

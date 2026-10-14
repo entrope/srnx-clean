@@ -125,11 +125,20 @@ fn label(line: &[u8]) -> &[u8] {
     line.get(60..).unwrap_or_default()
 }
 
+/// The first line of `bytes`, cut off after column 80: enough for a header
+/// record's content and label, without scanning a file that has no line
+/// breaks.
+fn first_record(bytes: &[u8]) -> &[u8] {
+    let head = bytes.get(..80).unwrap_or(bytes);
+    let end = head.iter().position(|&b| b == b'\n').unwrap_or(head.len());
+    &head[..end]
+}
+
 /// Returns the Compact RINEX version if `bytes` starts with a
 /// `CRINEX VERS   / TYPE` record.
 #[must_use]
 pub fn sniff_version(bytes: &[u8]) -> Option<CrinexVersion> {
-    let first = bytes.split(|&b| b == b'\n').next()?;
+    let first = first_record(bytes);
     if !label(first).starts_with(LABEL_CRINEX_VERS) {
         return None;
     }
@@ -140,10 +149,7 @@ pub fn sniff_version(bytes: &[u8]) -> Option<CrinexVersion> {
 /// (including versions this module does not support).
 #[must_use]
 pub fn is_crinex(bytes: &[u8]) -> bool {
-    bytes
-        .split(|&b| b == b'\n')
-        .next()
-        .is_some_and(|first| label(first).starts_with(LABEL_CRINEX_VERS))
+    label(first_record(bytes)).starts_with(LABEL_CRINEX_VERS)
 }
 
 /// List the satellites and signals declared by the RINEX header inside a
@@ -935,6 +941,13 @@ mod tests {
         assert_eq!(sniff_version(v31), Some(CrinexVersion::V3_1));
         assert_eq!(sniff_version(v9), None);
         assert!(is_crinex(v9));
+        // Only the first 80 bytes are examined.
+        let mut long = v1[..80].to_vec();
+        long.resize(1 << 20, b'x');
+        assert_eq!(sniff_version(&long), Some(CrinexVersion::V1_0));
+        assert!(!is_crinex(&vec![b'x'; 1 << 20]));
+        assert!(!is_crinex(b""));
+        assert!(!is_crinex(&v1[1..]));
         assert!(!is_crinex(
             b"     2.11           OBSERVATION DATA    G (GPS)             RINEX VERSION / TYPE\n"
         ));
