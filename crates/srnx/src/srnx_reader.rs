@@ -1,6 +1,6 @@
 //! Converts a parsed SRNX file into the shared [`ObsFile`] semantic model.
 //!
-//! Entry point: [`read`].
+//! Entry points: [`read`] and [`catalog`].
 
 use std::collections::BTreeMap;
 
@@ -8,9 +8,11 @@ use thiserror::Error;
 
 use crate::epoc::{Epoch, EpochChunkKind};
 use crate::file::{FileError, SrnxFile};
-use crate::model::{EpochRecord, EventRecord, Obs, ObsFile, SatId};
+use crate::model::{
+    Catalog, EpochRecord, EventRecord, Obs, ObsFile, SatId, SignalFilter, SignalMasks,
+};
 use crate::rinex_header::{self, Header, HeaderError, HeaderText, ObsCode, SatSystem};
-use crate::soc2::{self, Column};
+use crate::soc2::{Column, SatelliteColumns};
 use crate::socd::ABSENT;
 
 #[derive(Debug, Error)]
@@ -31,14 +33,40 @@ pub enum SrnxReadError {
     EpochRangeTooLarge,
 }
 
-/// Parse a complete SRNX observation file from bytes and return the
-/// normalized [`ObsFile`] semantic model.
-pub fn read(bytes: &[u8]) -> Result<ObsFile, SrnxReadError> {
-    let file = SrnxFile::parse(bytes)?;
-
-    if !file.file_digest_ok {
-        return Err(SrnxReadError::FileDigestMismatch);
+/// List the satellites in an SRNX file's `SDIR` chunk, each with the
+/// observation codes that its `SATE` chunk gives observations for.
+pub fn catalog(bytes: &[u8]) -> Result<Catalog, SrnxReadError> {
+    let file = open(bytes)?;
+    let rhdr_bytes = file.rhdr_payload().ok_or(SrnxReadError::NoRhdr)?;
+    let header = rinex_header::parse(rhdr_bytes)?;
+    let sdir = file.sdir()?.ok_or(SrnxReadError::NoSdir)?;
+    let mut satellites = Vec::with_capacity(sdir.satellites.len());
+    for entry in &sdir.satellites {
+        let sat_id = parse_sat_id(entry.sat_id);
+        let obs_codes = obs_codes_for_sat(&header, sat_id.system);
+        let offsets = file.sate_offsets_at(entry.sate_offset, obs_codes.len())?;
+        let observed = obs_codes
+            .iter()
+            .zip(&offsets)
+            .filter(|&(_, &offset)| offset != 0)
+            .map(|(&code, _)| code)
+            .collect();
+        satellites.push((sat_id, observed));
     }
+    Ok(Catalog {
+        codes_by_system: header.obs_codes.by_system,
+        satellites: Some(satellites),
+    })
+}
+
+/// Parse a complete SRNX observation file from bytes and return the
+/// normalized [`ObsFile`] semantic model, keeping only the satellite/signal
+/// pairs that `filter` selects (all of them for `None`).
+///
+/// Only the selected observation chunks, and those they reference for
+/// prediction, are decoded.
+pub fn read(bytes: &[u8], filter: Option<SignalFilter<'_>>) -> Result<ObsFile, SrnxReadError> {
+    let file = open(bytes)?;
 
     // RHDR → HeaderText (public) + internal Header (for obs codes).
     let rhdr_bytes = file.rhdr_payload().ok_or(SrnxReadError::NoRhdr)?;
@@ -73,6 +101,7 @@ pub fn read(bytes: &[u8]) -> Result<ObsFile, SrnxReadError> {
         .collect();
 
     let mut observations: BTreeMap<(SatId, ObsCode), Vec<(usize, Obs)>> = BTreeMap::new();
+    let mut masks = SignalMasks::new(filter);
 
     for entry in &sdir.satellites {
         let sat_id = parse_sat_id(entry.sat_id);
@@ -81,38 +110,44 @@ pub fn read(bytes: &[u8]) -> Result<ObsFile, SrnxReadError> {
         // Choose obs-code list for this satellite's system.
         let obs_codes: &[ObsCode] = obs_codes_for_sat(&header, sat_id.system);
         let num_obs_codes = obs_codes.len();
+        let keep = masks.get(sat_id, obs_codes);
+        if keep.is_some_and(|keep| !keep.contains(&true)) {
+            continue;
+        }
 
         let sate = file.sate_at(sate_file_offset, num_obs_codes, total_epochs)?;
         let present = &sate.present_epoch_indices;
 
         let times: Vec<i128> = present.iter().map(|&i| timestamps[i]).collect();
-        let columns: Vec<Option<Column>> = sate
-            .socd_offsets
-            .iter()
-            .map(|&rel_offset| {
-                if rel_offset == 0 {
-                    return Ok(None);
-                }
-                let offset = sate_file_offset.checked_add_signed(rel_offset).ok_or(
-                    FileError::Truncated {
+        let mut load = |code_idx: usize| -> Result<Option<Column>, FileError> {
+            let rel_offset = sate.socd_offsets[code_idx];
+            if rel_offset == 0 {
+                return Ok(None);
+            }
+            let offset =
+                sate_file_offset
+                    .checked_add_signed(rel_offset)
+                    .ok_or(FileError::Truncated {
                         what: "observation offset out of range",
-                    },
-                )?;
-                let chunk = file.chunk_at_offset(offset).ok_or(FileError::Truncated {
-                    what: "observation chunk at advertised offset",
-                })?;
-                match &chunk.fourcc {
-                    b"SOCD" => Ok(Some(Column::Socd(file.socd_at(offset)?))),
-                    b"SOC2" => Ok(Some(Column::Soc2(file.soc2_at(offset)?))),
-                    _ => Err(FileError::Truncated {
-                        what: "observation FOURCC mismatch",
-                    }),
-                }
-            })
-            .collect::<Result<_, FileError>>()?;
-        let decoded = soc2::decode_satellite(&columns, obs_codes, &times, units_per_second)
-            .map_err(FileError::from)?;
-        for (code_idx, socd) in decoded.iter().enumerate() {
+                    })?;
+            let chunk = file.chunk_at_offset(offset).ok_or(FileError::Truncated {
+                what: "observation chunk at advertised offset",
+            })?;
+            match &chunk.fourcc {
+                b"SOCD" => Ok(Some(Column::Socd(file.socd_at(offset)?))),
+                b"SOC2" => Ok(Some(Column::Soc2(file.soc2_at(offset)?))),
+                _ => Err(FileError::Truncated {
+                    what: "observation FOURCC mismatch",
+                }),
+            }
+        };
+        let mut columns = SatelliteColumns::new(obs_codes, &times, units_per_second);
+        for code_idx in 0..num_obs_codes {
+            if keep.map_or(true, |keep| keep[code_idx]) {
+                columns.decode(code_idx, &mut load)?;
+            }
+        }
+        for (code_idx, socd) in columns.into_columns().into_iter().enumerate() {
             let Some(socd) = socd else {
                 continue;
             };
@@ -146,6 +181,15 @@ pub fn read(bytes: &[u8]) -> Result<ObsFile, SrnxReadError> {
         events,
         observations,
     })
+}
+
+/// Parse the file framing and check the file-level digest.
+fn open(bytes: &[u8]) -> Result<SrnxFile<'_>, SrnxReadError> {
+    let file = SrnxFile::parse(bytes)?;
+    if !file.file_digest_ok {
+        return Err(SrnxReadError::FileDigestMismatch);
+    }
+    Ok(file)
 }
 
 // Gregorian day numbers, plus any leap seconds represented by the epoch
@@ -273,7 +317,7 @@ mod tests {
 
     fn try_read_srnx(name: &str) -> Option<ObsFile> {
         let bytes = std::fs::read(fixture(name)).ok()?;
-        read(&bytes).ok()
+        read(&bytes, None).ok()
     }
 
     #[test]
@@ -379,7 +423,7 @@ mod tests {
         let mut tampered = bytes;
         let last = tampered.len() - 1;
         tampered[last] ^= 0x01; // flip a bit in the file-level digest
-        match read(&tampered) {
+        match read(&tampered, None) {
             Ok(_) => panic!("tampered file should error"),
             Err(SrnxReadError::FileDigestMismatch) => {} // expected
             Err(e) => panic!("expected FileDigestMismatch, got {e:?}"),

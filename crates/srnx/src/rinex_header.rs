@@ -20,6 +20,9 @@ use std::collections::BTreeMap;
 
 use thiserror::Error;
 
+use crate::model::SatId;
+use crate::rinex3_obs::parse_sat_id;
+
 // ---------------------------------------------------------------------------
 // Public API: HeaderText — raw text with label-based query helpers
 // ---------------------------------------------------------------------------
@@ -318,6 +321,9 @@ pub struct Header {
     pub time_of_last_obs: Option<EpochTime>,
     pub leap_seconds: Option<i32>,
     pub wavelength_fact_l1l2: Option<(u8, u8)>,
+    /// Satellites listed by `PRN / # OF OBS` records, in header order and
+    /// without repeats; empty if the header has none.
+    pub satellites: Vec<SatId>,
 
     pub comments: Vec<String>,
     /// Recognized labels with content we didn't promote to a typed field,
@@ -353,6 +359,7 @@ const LABEL_TIME_FIRST: &str = "TIME OF FIRST OBS";
 const LABEL_TIME_LAST: &str = "TIME OF LAST OBS";
 const LABEL_LEAP: &str = "LEAP SECONDS";
 const LABEL_WAVELEN: &str = "WAVELENGTH FACT L1/2";
+const LABEL_PRN_OBS: &str = "PRN / # OF OBS";
 const LABEL_END: &str = "END OF HEADER";
 
 /// Read the format version from the `RINEX VERSION / TYPE` record without
@@ -456,6 +463,14 @@ pub fn parse(bytes: &[u8]) -> Result<Header, HeaderError> {
                 state.header.leap_seconds = content[..6.min(content.len())].trim().parse().ok();
             }
             LABEL_WAVELEN => state.header.wavelength_fact_l1l2 = parse_wavelength_fact(content),
+            // 3X,A1,I2: the satellite, blank on continuation lines.
+            LABEL_PRN_OBS => {
+                if let Some(sat) = content.get(3..).and_then(parse_sat_id) {
+                    if !state.header.satellites.contains(&sat) {
+                        state.header.satellites.push(sat);
+                    }
+                }
+            }
 
             LABEL_OBS_TYPES_V2 => {
                 state.handle_obs_v2_line(content)?;
@@ -843,6 +858,35 @@ mod tests {
         assert_eq!(codes.len(), 2);
         assert_eq!(codes[0].as_str(), "L1");
         assert_eq!(codes[1].as_str(), "C1");
+    }
+
+    #[test]
+    fn prn_obs_records_list_satellites() {
+        let header = build(&[
+            &line(
+                "     2.11           OBSERVATION DATA    M (MIXED)           ",
+                "RINEX VERSION / TYPE",
+            ),
+            &line(
+                "     2    L1    C1                                          ",
+                "# / TYPES OF OBSERV",
+            ),
+            &line("   E01   971   971", "PRN / # OF OBS"),
+            &line("         971", "PRN / # OF OBS"),
+            &line("    12   500   500", "PRN / # OF OBS"),
+            &line("   E01     1     1", "PRN / # OF OBS"),
+            &line("   R05   100      ", "PRN / # OF OBS"),
+            &line("", "END OF HEADER"),
+        ]);
+        let h = parse(header.as_bytes()).unwrap();
+        assert_eq!(
+            h.satellites,
+            [
+                SatId::new(SatSystem::GALILEO, 1),
+                SatId::new(SatSystem::GPS, 12),
+                SatId::new(SatSystem::GLONASS, 5),
+            ]
+        );
     }
 
     #[test]

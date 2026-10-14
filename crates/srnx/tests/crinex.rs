@@ -42,9 +42,9 @@ fn rnx_data(name: &str) -> PathBuf {
 fn parse_rinex(bytes: &[u8], name: &str) -> ObsFile {
     match rinex_header::sniff_version(bytes) {
         Some(v) if v.is_v3_or_later() => {
-            rinex3_obs::parse(bytes).unwrap_or_else(|e| panic!("{name}: {e}"))
+            rinex3_obs::parse(bytes, None).unwrap_or_else(|e| panic!("{name}: {e}"))
         }
-        _ => rinex2_obs::parse(bytes).unwrap_or_else(|e| panic!("{name}: {e}")),
+        _ => rinex2_obs::parse(bytes, None).unwrap_or_else(|e| panic!("{name}: {e}")),
     }
 }
 
@@ -79,7 +79,7 @@ fn golden(stem: &str, version: CrinexVersion) {
         );
     }
 
-    let from_crx = crinex::parse(&crx).unwrap();
+    let from_crx = crinex::parse(&crx, None).unwrap();
     let from_rnx = parse_rinex(&rnx, stem);
     assert_same(
         &from_crx,
@@ -113,7 +113,7 @@ fn golden_v402_picoseconds() {
 #[test]
 fn picoseconds_are_decoded() {
     let crx = std::fs::read(test_data("rinex402_picoseconds.crx")).unwrap();
-    let file = crinex::parse(&crx).unwrap();
+    let file = crinex::parse(&crx, None).unwrap();
     let ps: Vec<u32> = file.epochs.iter().map(|e| e.extra_ps).collect();
     assert_eq!(ps, [1, 23456, 99999, 99999, 0, 0, 7]);
 }
@@ -149,9 +149,9 @@ fn corpus_pair(crx_name: &str, other_name: &str) {
         eprintln!("skip {crx_name} vs {other_name}: fixture(s) not found");
         return;
     };
-    let from_crx = crinex::parse(&crx).unwrap_or_else(|e| panic!("{crx_name}: {e}"));
+    let from_crx = crinex::parse(&crx, None).unwrap_or_else(|e| panic!("{crx_name}: {e}"));
     let from_other = if other.starts_with(b"SRNX") {
-        srnx_reader::read(&other).unwrap_or_else(|e| panic!("{other_name}: {e}"))
+        srnx_reader::read(&other, None).unwrap_or_else(|e| panic!("{other_name}: {e}"))
     } else {
         parse_rinex(&other, other_name)
     };
@@ -306,8 +306,8 @@ fn via_rnx2srnx(name: &str) {
     let srnx_b = std::fs::read(&tmp).expect("read temp srnx");
     let _ = std::fs::remove_file(&tmp);
 
-    let from_crx = crinex::parse(&crx).unwrap_or_else(|e| panic!("{name}: {e}"));
-    let from_srnx = srnx_reader::read(&srnx_b).expect("parse generated SRNX");
+    let from_crx = crinex::parse(&crx, None).unwrap_or_else(|e| panic!("{name}: {e}"));
+    let from_srnx = srnx_reader::read(&srnx_b, None).expect("parse generated SRNX");
     assert_same(&from_crx, &from_srnx, name, "rnx2srnx-output");
 }
 

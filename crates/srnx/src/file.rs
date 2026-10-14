@@ -254,6 +254,22 @@ impl<'a> SrnxFile<'a> {
         num_obs_codes: usize,
         total_epochs: usize,
     ) -> Result<Sate, FileError> {
+        let payload = self.sate_payload(offset)?;
+        Ok(sate::parse(payload, num_obs_codes, total_epochs)?)
+    }
+
+    /// Parse only the observation chunk offsets of the `SATE` chunk at the
+    /// given absolute file offset, skipping its epoch presence data.
+    pub fn sate_offsets_at(
+        &self,
+        offset: u64,
+        num_obs_codes: usize,
+    ) -> Result<Vec<i64>, FileError> {
+        let payload = self.sate_payload(offset)?;
+        Ok(sate::parse_offsets(payload, num_obs_codes)?)
+    }
+
+    fn sate_payload(&self, offset: u64) -> Result<&'a [u8], FileError> {
         let chunk = self.chunk_at_offset(offset).ok_or(FileError::Truncated {
             what: "SATE chunk at given offset",
         })?;
@@ -262,7 +278,7 @@ impl<'a> SrnxFile<'a> {
                 what: "SATE chunk at given offset (FOURCC mismatch)",
             });
         }
-        Ok(sate::parse(chunk.payload, num_obs_codes, total_epochs)?)
+        Ok(chunk.payload)
     }
 
     /// Parse a `SOCD` chunk at the given absolute file offset.

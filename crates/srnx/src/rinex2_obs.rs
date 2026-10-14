@@ -38,8 +38,10 @@ use std::collections::BTreeMap;
 
 use thiserror::Error;
 
-use crate::model::{EpochRecord, EventRecord, Obs, ObsFile, SatId};
-use crate::rinex_header::{self, HeaderError, HeaderText, ObsCode, SatSystem};
+use crate::model::{
+    Catalog, EpochRecord, EventRecord, Obs, ObsFile, SatId, SignalFilter, SignalMasks,
+};
+use crate::rinex_header::{self, Header, HeaderError, HeaderText, ObsCode, SatSystem};
 
 #[derive(Debug, Error)]
 pub enum Rinex2Error {
@@ -63,11 +65,20 @@ pub enum Rinex2Error {
 // Public entry point
 // ---------------------------------------------------------------------------
 
-/// Parse a complete RINEX v2 observation file.
+/// List the satellites and signals declared by a RINEX v2 observation
+/// file's header.  Every satellite may carry every observation code.
+pub fn catalog(input: &[u8]) -> Result<Catalog, Rinex2Error> {
+    let header = rinex_header::parse(input)?;
+    let codes = obs_codes(&header)?;
+    Ok(Catalog::from_header(&header, |_| codes))
+}
+
+/// Parse a complete RINEX v2 observation file, keeping only the
+/// satellite/signal pairs that `filter` selects (all of them for `None`).
 ///
 /// Both LF and CRLF line endings are accepted.
 #[allow(clippy::too_many_lines)]
-pub fn parse(input: &[u8]) -> Result<ObsFile, Rinex2Error> {
+pub fn parse(input: &[u8], filter: Option<SignalFilter<'_>>) -> Result<ObsFile, Rinex2Error> {
     let text = std::str::from_utf8(input).map_err(|_| Rinex2Error::NotUtf8)?;
 
     // Split into lines (strips the newline character(s)).
@@ -95,21 +106,12 @@ pub fn parse(input: &[u8]) -> Result<ObsFile, Rinex2Error> {
     // tolerates trailing data because it stops at END OF HEADER).
     let header = rinex_header::parse(input).map_err(Rinex2Error::Header)?;
 
-    // Get the observation code list.  For v2, all systems share a single list
-    // stored under SatSystem::MIXED.  Fall back to the first list if MIXED is
-    // absent (should not happen for conforming v2 files).
-    let obs_codes: Vec<ObsCode> = if let Some(codes) = header.obs_codes.for_system(SatSystem::MIXED)
-    {
-        codes.to_vec()
-    } else {
-        header
-            .obs_codes
-            .by_system
-            .first()
-            .map(|(_, v)| v.clone())
-            .ok_or(Rinex2Error::NoObsCodes)?
-    };
+    let obs_codes = obs_codes(&header)?;
     let num_obs = obs_codes.len();
+    let mut masks = SignalMasks::new(filter);
+    for &sat in &header.satellites {
+        masks.get(sat, obs_codes);
+    }
     let obs_lines_per_sat = obs_lines_count(num_obs);
 
     // Data starts on the line after END OF HEADER.
@@ -301,12 +303,16 @@ pub fn parse(input: &[u8]) -> Result<ObsFile, Rinex2Error> {
         epochs.push(epoch_rec);
 
         for &sat in &sats {
+            let keep = masks.get(sat, obs_codes);
             for (obs_line_idx, obs_chunk) in
                 data_lines[pos..pos + obs_lines_per_sat].iter().enumerate()
             {
                 let base_obs = obs_line_idx * 5;
                 let end_obs = (base_obs + 5).min(num_obs);
                 for (slot, &code) in obs_codes[base_obs..end_obs].iter().enumerate() {
+                    if keep.is_some_and(|keep| !keep[base_obs + slot]) {
+                        continue;
+                    }
                     if let Some(obs) = parse_obs_field(obs_chunk, slot) {
                         sparse
                             .entry((sat, code))
@@ -335,6 +341,23 @@ pub fn parse(input: &[u8]) -> Result<ObsFile, Rinex2Error> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// The observation-code list.  For v2, all systems share a single list
+/// stored under `SatSystem::MIXED`.  Fall back to the first list if MIXED is
+/// absent (should not happen for conforming v2 files).
+fn obs_codes(header: &Header) -> Result<&[ObsCode], Rinex2Error> {
+    header
+        .obs_codes
+        .for_system(SatSystem::MIXED)
+        .or_else(|| {
+            header
+                .obs_codes
+                .by_system
+                .first()
+                .map(|(_, v)| v.as_slice())
+        })
+        .ok_or(Rinex2Error::NoObsCodes)
+}
 
 /// Number of 80-char observation lines required for `num_obs` obs codes.
 #[inline]
@@ -796,7 +819,7 @@ mod tests {
     #[test]
     fn flag1_and_flag6_records_are_events() {
         let text = include_str!("../tests/data/rinex211_flag1_flag6.rnx");
-        let f = parse(text.as_bytes()).unwrap();
+        let f = parse(text.as_bytes(), None).unwrap();
 
         // Only the two flag-0 epochs are observation epochs.
         let secs: Vec<u64> = f.epochs.iter().map(|e| e.seconds_e7).collect();
@@ -832,7 +855,7 @@ mod tests {
             .join("rnx-data")
             .join(name);
         let bytes = std::fs::read(path).ok()?;
-        parse(&bytes).ok()
+        parse(&bytes, None).ok()
     }
 
     #[test]

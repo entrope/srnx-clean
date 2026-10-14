@@ -1,15 +1,12 @@
 use std::process::ExitCode;
 
-use srnx::crinex;
 use srnx::diff;
 use srnx::digest::DigestId;
 use srnx::epoc;
 use srnx::file::SrnxFile;
 use srnx::model::ObsFile;
-use srnx::rinex2_obs;
-use srnx::rinex3_obs;
+use srnx::reader::Format;
 use srnx::rinex_header;
-use srnx::srnx_reader;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -77,40 +74,18 @@ fn run(r: Result<(), Box<dyn std::error::Error>>) -> ExitCode {
 // Format detection and loading
 // ---------------------------------------------------------------------------
 
-enum FileFormat {
-    Srnx,
-    Crinex,
-    Rinex2,
-    Rinex3,
-}
-
-fn detect_format(path: &str, bytes: &[u8]) -> FileFormat {
-    if bytes.starts_with(b"SRNX") {
-        return FileFormat::Srnx;
-    }
-    if std::path::Path::new(path)
+fn load_obs_file(path: &str) -> Result<ObsFile, Box<dyn std::error::Error>> {
+    let bytes = std::fs::read(path)?;
+    // A damaged SRNX file should get the SRNX reader's diagnosis.
+    let format = if std::path::Path::new(path)
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("srnx"))
     {
-        return FileFormat::Srnx;
-    }
-    if crinex::is_crinex(bytes) {
-        return FileFormat::Crinex;
-    }
-    match rinex_header::sniff_version(bytes) {
-        Some(v) if v.is_v3_or_later() => FileFormat::Rinex3,
-        _ => FileFormat::Rinex2,
-    }
-}
-
-fn load_obs_file(path: &str) -> Result<ObsFile, Box<dyn std::error::Error>> {
-    let bytes = std::fs::read(path)?;
-    match detect_format(path, &bytes) {
-        FileFormat::Srnx => Ok(srnx_reader::read(&bytes)?),
-        FileFormat::Crinex => Ok(crinex::parse(&bytes)?),
-        FileFormat::Rinex2 => Ok(rinex2_obs::parse(&bytes)?),
-        FileFormat::Rinex3 => Ok(rinex3_obs::parse(&bytes)?),
-    }
+        Format::Srnx
+    } else {
+        Format::detect(&bytes)
+    };
+    Ok(format.read(&bytes, None)?)
 }
 
 // ---------------------------------------------------------------------------

@@ -4,9 +4,9 @@
 //! but encode it very differently.  This module provides the canonical
 //! in-memory representation used by the `srnx-diff` comparison tool.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
-use crate::rinex_header::{HeaderText, ObsCode, SatSystem};
+use crate::rinex_header::{Header, HeaderText, ObsCode, SatSystem};
 
 /// Satellite identifier: system code byte (`b'G'`, `b'R'`, `b'E'`, …) + PRN.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -101,4 +101,84 @@ pub struct ObsFile {
     /// order.  Epochs where the observation is absent are simply omitted.
     /// Use binary search on the first element for O(log n) lookup by epoch.
     pub observations: BTreeMap<(SatId, ObsCode), Vec<(usize, Obs)>>,
+}
+
+/// The satellites and signals an observation file may contain, as known
+/// without decoding its observations.
+///
+/// For SRNX files the satellites come from the `SDIR` chunk and each
+/// satellite's signals from its `SATE` chunk: the observation codes with
+/// at least one observation.  For RINEX and Compact RINEX files both come
+/// from the header: the satellites from `PRN / # OF OBS` records, and each
+/// satellite's signals are the observation codes declared for its system,
+/// whether or not the satellite has any observations of them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Catalog {
+    /// Observation codes declared in the header, per satellite system, in
+    /// header order.  RINEX v2 files have a single list under
+    /// [`SatSystem::MIXED`].
+    pub codes_by_system: Vec<(SatSystem, Vec<ObsCode>)>,
+    /// Satellites in file order, each with the observation codes it may
+    /// carry in header order.  `None` when the file does not list its
+    /// satellites: a RINEX or Compact RINEX header without
+    /// `PRN / # OF OBS` records.
+    pub satellites: Option<Vec<(SatId, Vec<ObsCode>)>>,
+}
+
+impl Catalog {
+    /// The catalog of a RINEX header, given the code list the reader uses
+    /// for each satellite system.
+    pub(crate) fn from_header<'h>(
+        header: &'h Header,
+        codes_for: impl Fn(SatSystem) -> &'h [ObsCode],
+    ) -> Self {
+        Self {
+            codes_by_system: header.obs_codes.by_system.clone(),
+            satellites: (!header.satellites.is_empty()).then(|| {
+                header
+                    .satellites
+                    .iter()
+                    .map(|&sat| (sat, codes_for(sat.system).to_vec()))
+                    .collect()
+            }),
+        }
+    }
+}
+
+/// A caller's choice of satellite/signal pairs to read: `true` keeps the
+/// pair's observations.  Readers take an `Option<SignalFilter>`, where
+/// `None` keeps everything.
+///
+/// A reader calls the filter at most once per pair, with every observation
+/// code declared for the satellite's system, before it reads that
+/// satellite's observations.  The RINEX and Compact RINEX readers call it
+/// for the satellites in `PRN / # OF OBS` records right after the header.
+pub type SignalFilter<'a> = &'a mut dyn FnMut(SatId, ObsCode) -> bool;
+
+/// A [`SignalFilter`] memoized as one mask per satellite over the
+/// observation-code list the reader uses for it.
+pub(crate) struct SignalMasks<'f> {
+    filter: Option<SignalFilter<'f>>,
+    masks: HashMap<SatId, Vec<bool>>,
+}
+
+impl<'f> SignalMasks<'f> {
+    pub(crate) fn new(filter: Option<SignalFilter<'f>>) -> Self {
+        Self {
+            filter,
+            masks: HashMap::new(),
+        }
+    }
+
+    /// Which of `codes` to keep for `sat`; `None` keeps them all.  A
+    /// satellite always gets the same code list, so the first call's mask
+    /// is reused.
+    pub(crate) fn get(&mut self, sat: SatId, codes: &[ObsCode]) -> Option<&[bool]> {
+        let filter = self.filter.as_mut()?;
+        let mask = self
+            .masks
+            .entry(sat)
+            .or_insert_with(|| codes.iter().map(|&code| filter(sat, code)).collect());
+        Some(mask)
+    }
 }

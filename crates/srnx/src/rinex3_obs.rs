@@ -45,9 +45,11 @@ use std::collections::BTreeMap;
 
 use thiserror::Error;
 
-use crate::model::{EpochRecord, EventRecord, Obs, ObsFile, SatId};
+use crate::model::{
+    Catalog, EpochRecord, EventRecord, Obs, ObsFile, SatId, SignalFilter, SignalMasks,
+};
 use crate::rinex2_obs::{byte_at, parse_obs_at};
-use crate::rinex_header::{self, HeaderError, HeaderText, ObsCode, SatSystem};
+use crate::rinex_header::{self, Header, HeaderError, HeaderText, ObsCode, SatSystem};
 
 #[derive(Debug, Error)]
 pub enum Rinex3Error {
@@ -67,11 +69,23 @@ pub enum Rinex3Error {
 // Public entry point
 // ---------------------------------------------------------------------------
 
-/// Parse a complete RINEX v3 or v4 observation file.
+/// List the satellites and signals declared by a RINEX v3 or v4
+/// observation file's header.  Every satellite may carry every observation
+/// code of its system.
+pub fn catalog(input: &[u8]) -> Result<Catalog, Rinex3Error> {
+    let header = rinex_header::parse(input)?;
+    let codes_by_sys = codes_by_system(&header)?;
+    Ok(Catalog::from_header(&header, |sys| {
+        codes_by_sys[usize::from(sys.0)]
+    }))
+}
+
+/// Parse a complete RINEX v3 or v4 observation file, keeping only the
+/// satellite/signal pairs that `filter` selects (all of them for `None`).
 ///
 /// Both LF and CRLF line endings are accepted.  Malformed epoch records are
 /// skipped; parsing resumes at the next line starting with `>`.
-pub fn parse(input: &[u8]) -> Result<ObsFile, Rinex3Error> {
+pub fn parse(input: &[u8], filter: Option<SignalFilter<'_>>) -> Result<ObsFile, Rinex3Error> {
     let text = std::str::from_utf8(input).map_err(|_| Rinex3Error::NotUtf8)?;
     let lines: Vec<&str> = text.lines().collect();
 
@@ -88,26 +102,10 @@ pub fn parse(input: &[u8]) -> Result<ObsFile, Rinex3Error> {
     raw_header_text.push('\n');
 
     let header = rinex_header::parse(input)?;
-    let version = header.version;
-    if !matches!(version.major, 3 | 4) {
-        return Err(Rinex3Error::UnsupportedVersion {
-            major: version.major,
-            minor: version.minor,
-        });
-    }
-
-    // Observation-code list per system letter.  The first declaration wins,
-    // matching `ObsCodes::for_system` (used by the SRNX reader).
-    let mut codes_by_sys: [&[ObsCode]; 128] = [&[]; 128];
-    for (sys, codes) in &header.obs_codes.by_system {
-        if let Some(slot) = codes_by_sys.get_mut(usize::from(sys.0)) {
-            if slot.is_empty() {
-                *slot = codes;
-            }
-        }
-    }
-    if codes_by_sys.iter().all(|c| c.is_empty()) {
-        return Err(Rinex3Error::NoObsCodes);
+    let codes_by_sys = codes_by_system(&header)?;
+    let mut masks = SignalMasks::new(filter);
+    for &sat in &header.satellites {
+        masks.get(sat, codes_by_sys[usize::from(sat.system.0)]);
     }
 
     let data = &lines[eoh_idx + 1..];
@@ -139,7 +137,11 @@ pub fn parse(input: &[u8]) -> Result<ObsFile, Rinex3Error> {
                         continue;
                     };
                     let codes = codes_by_sys[usize::from(sat.system.0)];
+                    let keep = masks.get(sat, codes);
                     for (slot, &code) in codes.iter().enumerate() {
+                        if keep.is_some_and(|keep| !keep[slot]) {
+                            continue;
+                        }
                         let Some(obs) = parse_obs_at(sat_line, 3 + slot * 16) else {
                             continue;
                         };
@@ -184,6 +186,31 @@ pub fn parse(input: &[u8]) -> Result<ObsFile, Rinex3Error> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Check the header's version and index its observation-code lists by
+/// system letter.  The first declaration wins, matching
+/// `ObsCodes::for_system` (used by the SRNX reader).
+fn codes_by_system(header: &Header) -> Result<[&[ObsCode]; 128], Rinex3Error> {
+    let version = header.version;
+    if !matches!(version.major, 3 | 4) {
+        return Err(Rinex3Error::UnsupportedVersion {
+            major: version.major,
+            minor: version.minor,
+        });
+    }
+    let mut codes_by_sys: [&[ObsCode]; 128] = [&[]; 128];
+    for (sys, codes) in &header.obs_codes.by_system {
+        if let Some(slot) = codes_by_sys.get_mut(usize::from(sys.0)) {
+            if slot.is_empty() {
+                *slot = codes;
+            }
+        }
+    }
+    if codes_by_sys.iter().all(|c| c.is_empty()) {
+        return Err(Rinex3Error::NoObsCodes);
+    }
+    Ok(codes_by_sys)
+}
 
 /// A decoded epoch record line.
 #[derive(Debug)]
@@ -329,7 +356,7 @@ fn parse_fixed(line: &str, start: usize, width: usize, decimals: u32) -> Option<
 /// Parse the `A1,I2.2` satellite identifier at the start of an observation
 /// record.  A blank system letter is read as GPS and a blank tens digit as
 /// zero, for tolerance of non-conforming writers.
-fn parse_sat_id(line: &str) -> Option<SatId> {
+pub(crate) fn parse_sat_id(line: &str) -> Option<SatId> {
     let system = match byte_at(line, 0) {
         b' ' => SatSystem::GPS,
         s @ b'A'..=b'Z' => SatSystem(s),
@@ -498,7 +525,7 @@ mod tests {
 
     #[test]
     fn table_a4_epochs_and_events() {
-        let f = parse(TABLE_A4.as_bytes()).unwrap();
+        let f = parse(TABLE_A4.as_bytes(), None).unwrap();
         assert_eq!(f.header.get_line("MARKER NAME"), Some("A 9080".to_string()));
         assert!(f.header.ends_with("END OF HEADER\n"));
 
@@ -533,7 +560,7 @@ mod tests {
 
     #[test]
     fn table_a4_observations() {
-        let f = parse(TABLE_A4.as_bytes()).unwrap();
+        let f = parse(TABLE_A4.as_bytes(), None).unwrap();
         assert_eq!(
             obs(&f, "G06", "C1C"),
             vec![
@@ -572,7 +599,7 @@ mod tests {
 
     #[test]
     fn picosecond_epochs() {
-        let f = parse(PICOSECONDS.as_bytes()).unwrap();
+        let f = parse(PICOSECONDS.as_bytes(), None).unwrap();
         // (minute, seconds_e7, extra_ps, clock_offset_e12, satellites)
         let got: Vec<(u8, u64, u32, i64)> = f
             .epochs
@@ -616,8 +643,8 @@ mod tests {
     #[test]
     fn crlf_and_short_lines() {
         let crlf = TABLE_A4.replace('\n', "\r\n");
-        let a = parse(TABLE_A4.as_bytes()).unwrap();
-        let b = parse(crlf.as_bytes()).unwrap();
+        let a = parse(TABLE_A4.as_bytes(), None).unwrap();
+        let b = parse(crlf.as_bytes(), None).unwrap();
         assert_eq!(a.header, b.header);
         assert_eq!(a.epochs, b.epochs);
         assert_eq!(a.observations, b.observations);
@@ -630,7 +657,7 @@ mod tests {
                                                             END OF HEADER
 ";
         assert!(matches!(
-            parse(v2.as_bytes()),
+            parse(v2.as_bytes(), None),
             Err(Rinex3Error::UnsupportedVersion {
                 major: 2,
                 minor: 11
@@ -643,19 +670,22 @@ mod tests {
         let v3 = "     3.05           OBSERVATION DATA    M                   RINEX VERSION / TYPE
                                                             END OF HEADER
 ";
-        assert!(matches!(parse(v3.as_bytes()), Err(Rinex3Error::NoObsCodes)));
+        assert!(matches!(
+            parse(v3.as_bytes(), None),
+            Err(Rinex3Error::NoObsCodes)
+        ));
     }
 
     #[test]
     fn non_ascii_comment_does_not_panic() {
         let text = TABLE_A4.replacen("A 9080      ", "A 9080 Zürich", 1);
-        let f = parse(text.as_bytes()).unwrap();
+        let f = parse(text.as_bytes(), None).unwrap();
         assert_eq!(f.epochs.len(), 5);
 
         // A multi-byte character straddling the column-60 label boundary.
         let comment = format!("{}\u{fc}COMMENT\n", "x".repeat(59));
         let text = TABLE_A4.replacen("A 9080", &format!("{comment}A 9080"), 1);
-        let f = parse(text.as_bytes()).unwrap();
+        let f = parse(text.as_bytes(), None).unwrap();
         assert_eq!(f.epochs.len(), 5);
     }
 
@@ -668,7 +698,7 @@ mod tests {
             .join("rnx-data")
             .join(name);
         let bytes = std::fs::read(path).ok()?;
-        Some(parse(&bytes).unwrap_or_else(|e| panic!("{name}: {e}")))
+        Some(parse(&bytes, None).unwrap_or_else(|e| panic!("{name}: {e}")))
     }
 
     #[test]

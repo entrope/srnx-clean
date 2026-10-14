@@ -13,6 +13,7 @@ pub mod evtf;
 pub mod file;
 pub mod leb128;
 pub mod model;
+pub mod reader;
 pub mod rinex2_obs;
 pub mod rinex3_obs;
 pub mod rinex_header;

@@ -354,8 +354,8 @@ fn round_trip(rnx_name: &str, srnx_name: &str) {
         eprintln!("skip round_trip {rnx_name}: fixture(s) not found");
         return;
     };
-    let rnx = rinex2_obs::parse(&rnx_b).unwrap_or_else(|e| panic!("{rnx_name}: {e}"));
-    let srnx = srnx_reader::read(&srnx_b).unwrap_or_else(|e| panic!("{srnx_name}: {e}"));
+    let rnx = rinex2_obs::parse(&rnx_b, None).unwrap_or_else(|e| panic!("{rnx_name}: {e}"));
+    let srnx = srnx_reader::read(&srnx_b, None).unwrap_or_else(|e| panic!("{srnx_name}: {e}"));
     let diffs = compare_obs_files(&rnx, &srnx, rnx_name, srnx_name);
     assert!(
         diffs.is_empty(),
@@ -436,8 +436,8 @@ fn dynamic_round_trip_n3021830() {
     let srnx_b = std::fs::read(&tmp).expect("read temp srnx");
     let _ = std::fs::remove_file(&tmp);
 
-    let rnx = rinex2_obs::parse(&rnx_b).expect("parse RINEX v2");
-    let srnx = srnx_reader::read(&srnx_b).expect("parse generated SRNX");
+    let rnx = rinex2_obs::parse(&rnx_b, None).expect("parse RINEX v2");
+    let srnx = srnx_reader::read(&srnx_b, None).expect("parse generated SRNX");
 
     let diffs = compare_obs_files(&rnx, &srnx, "n3021830.22o", "rnx2srnx-output");
     assert!(
@@ -475,8 +475,8 @@ fn dynamic_round_trip_v3(name: &str) {
     let srnx_b = std::fs::read(&tmp).expect("read temp srnx");
     let _ = std::fs::remove_file(&tmp);
 
-    let rnx = rinex3_obs::parse(&rnx_b).unwrap_or_else(|e| panic!("{name}: {e}"));
-    let srnx = srnx_reader::read(&srnx_b).expect("parse generated SRNX");
+    let rnx = rinex3_obs::parse(&rnx_b, None).unwrap_or_else(|e| panic!("{name}: {e}"));
+    let srnx = srnx_reader::read(&srnx_b, None).expect("parse generated SRNX");
     assert!(!rnx.observations.is_empty(), "{name}: no observations");
     let diffs = compare_obs_files(&rnx, &srnx, name, "rnx2srnx-output");
     assert!(
@@ -524,8 +524,8 @@ fn dynamic_round_trip_v2_flag1_flag6() {
     let srnx_b = std::fs::read(&tmp).expect("read temp srnx");
     let _ = std::fs::remove_file(&tmp);
 
-    let rnx = rinex2_obs::parse(&std::fs::read(&rnx_path).unwrap()).expect("parse RINEX v2");
-    let srnx = srnx_reader::read(&srnx_b).expect("parse generated SRNX");
+    let rnx = rinex2_obs::parse(&std::fs::read(&rnx_path).unwrap(), None).expect("parse RINEX v2");
+    let srnx = srnx_reader::read(&srnx_b, None).expect("parse generated SRNX");
     assert_eq!(rnx.epochs.len(), 2);
     assert_eq!(rnx.events.len(), srnx.events.len());
     let diffs = compare_obs_files(&rnx, &srnx, "rinex211_flag1_flag6.rnx", "rnx2srnx-output");
@@ -618,7 +618,7 @@ fn evtf_azst1830_has_events() {
         eprintln!("skip evtf_azst1830: fixture not found");
         return;
     };
-    let file = srnx::srnx_reader::read(&bytes).expect("parse azst1830.srnx");
+    let file = srnx::srnx_reader::read(&bytes, None).expect("parse azst1830.srnx");
     // azst1830 has 23 EVTF chunks per srnx_scan.
     assert!(
         file.events.len() >= 23,
@@ -641,7 +641,7 @@ fn evtf_abmf_no_events() {
         eprintln!("skip evtf_abmf: fixture not found");
         return;
     };
-    let file = srnx::srnx_reader::read(&bytes).expect("parse abmf.srnx");
+    let file = srnx::srnx_reader::read(&bytes, None).expect("parse abmf.srnx");
     // abmf has 0 EVTF chunks per srnx_scan.
     assert!(
         file.events.is_empty(),

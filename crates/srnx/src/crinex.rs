@@ -46,7 +46,7 @@ use std::collections::HashMap;
 
 use thiserror::Error;
 
-use crate::model::ObsFile;
+use crate::model::{Catalog, ObsFile, SignalFilter};
 use crate::rinex2_obs::{self, Rinex2Error};
 use crate::rinex3_obs::{self, Rinex3Error};
 use crate::rinex_header;
@@ -145,12 +145,31 @@ pub fn is_crinex(bytes: &[u8]) -> bool {
         .is_some_and(|first| label(first).starts_with(LABEL_CRINEX_VERS))
 }
 
-/// Decompress a Compact RINEX file and parse the resulting RINEX text.
-pub fn parse(input: &[u8]) -> Result<ObsFile, CrinexError> {
+/// List the satellites and signals declared by the RINEX header inside a
+/// Compact RINEX file, without decompressing its observations.
+pub fn catalog(input: &[u8]) -> Result<Catalog, CrinexError> {
+    if !is_crinex(input) {
+        return Err(CrinexError::NotCrinex);
+    }
+    // The RINEX header follows the CRINEX VERS and CRINEX PROG / DATE lines.
+    let mut lines = Lines::new(input);
+    lines.next();
+    lines.next().ok_or(CrinexError::NoEndOfHeader)?;
+    let rinex = lines.rest;
+    match rinex_header::sniff_version(rinex) {
+        Some(v) if v.is_v3_or_later() => Ok(rinex3_obs::catalog(rinex)?),
+        _ => Ok(rinex2_obs::catalog(rinex)?),
+    }
+}
+
+/// Decompress a Compact RINEX file and parse the resulting RINEX text,
+/// keeping only the satellite/signal pairs that `filter` selects (all of
+/// them for `None`).
+pub fn parse(input: &[u8], filter: Option<SignalFilter<'_>>) -> Result<ObsFile, CrinexError> {
     let text = decompress(input)?;
     match rinex_header::sniff_version(&text) {
-        Some(v) if v.is_v3_or_later() => Ok(rinex3_obs::parse(&text)?),
-        _ => Ok(rinex2_obs::parse(&text)?),
+        Some(v) if v.is_v3_or_later() => Ok(rinex3_obs::parse(&text, filter)?),
+        _ => Ok(rinex2_obs::parse(&text, filter)?),
     }
 }
 

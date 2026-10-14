@@ -62,8 +62,8 @@ fn reference_round_trip(name: &str, socd: bool) {
         .iter()
         .any(|c| c.fourcc == if socd { *b"SOCD" } else { *b"SOC2" }));
     assert!(framing.chunks.iter().all(|c| c.digest_ok));
-    let actual = srnx_reader::read(&bytes).unwrap();
-    let original = rinex2_obs::parse(&std::fs::read(&input).unwrap()).unwrap();
+    let actual = srnx_reader::read(&bytes, None).unwrap();
+    let original = rinex2_obs::parse(&std::fs::read(&input).unwrap(), None).unwrap();
     let differences = diff::compare(&original, &actual, name, "reference SRNX");
     assert!(differences.is_empty(), "{}", differences.join("\n"));
     let decoder = Command::new(helper("srnx2rnx"))
@@ -76,7 +76,7 @@ fn reference_round_trip(name: &str, socd: bool) {
         "decoder failed: {}",
         String::from_utf8_lossy(&decoder.stderr)
     );
-    let oracle = rinex2_obs::parse(&std::fs::read(&decoded_output).unwrap()).unwrap();
+    let oracle = rinex2_obs::parse(&std::fs::read(&decoded_output).unwrap(), None).unwrap();
     let differences = diff::compare(&oracle, &actual, "reference RINEX", "SRNX reader");
     assert!(differences.is_empty(), "{}", differences.join("\n"));
     std::fs::remove_file(output).unwrap();
@@ -124,7 +124,7 @@ fn rinex3_soc2_matches_revision_1_0() {
             "encoder failed: {}",
             String::from_utf8_lossy(&result.stderr)
         );
-        observations.push(srnx_reader::read(&std::fs::read(&output).unwrap()).unwrap());
+        observations.push(srnx_reader::read(&std::fs::read(&output).unwrap(), None).unwrap());
         std::fs::remove_file(output).unwrap();
     }
     let differences = diff::compare(&observations[0], &observations[1], "SOC2", "SOCD");
@@ -163,8 +163,8 @@ fn epo2_round_trip(input: &Path, stem: &str) -> Option<ObsFile> {
     assert_eq!(counts.get(b"EPO2"), Some(&1));
     assert_eq!(counts.get(b"EPOC"), None);
 
-    let actual = srnx_reader::read(&bytes).unwrap();
-    let original = rinex3_obs::parse(&std::fs::read(input).unwrap()).unwrap();
+    let actual = srnx_reader::read(&bytes, None).unwrap();
+    let original = rinex3_obs::parse(&std::fs::read(input).unwrap(), None).unwrap();
     let differences = diff::compare(&original, &actual, "RINEX 4.02", "reference SRNX");
     assert!(differences.is_empty(), "{}", differences.join("\n"));
 
@@ -178,7 +178,7 @@ fn epo2_round_trip(input: &Path, stem: &str) -> Option<ObsFile> {
         "decoder failed: {}",
         String::from_utf8_lossy(&decoder.stderr)
     );
-    let oracle = rinex3_obs::parse(&std::fs::read(&decoded_output).unwrap()).unwrap();
+    let oracle = rinex3_obs::parse(&std::fs::read(&decoded_output).unwrap(), None).unwrap();
     let differences = diff::compare(&oracle, &actual, "reference RINEX", "SRNX reader");
     assert!(differences.is_empty(), "{}", differences.join("\n"));
     std::fs::remove_file(output).unwrap();

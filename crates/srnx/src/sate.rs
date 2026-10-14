@@ -54,6 +54,36 @@ pub struct Sate {
     pub present_epoch_indices: Vec<usize>,
 }
 
+/// Parse only the observation chunk offsets of a `SATE` chunk payload,
+/// skipping its epoch presence data.
+pub fn parse_offsets(payload: &[u8], num_obs_codes: usize) -> Result<Vec<i64>, SateError> {
+    let mut cursor = payload;
+    read_name(&mut cursor)?;
+    read_offsets(&mut cursor, num_obs_codes)
+}
+
+/// Null-terminated satellite name.
+fn read_name(cursor: &mut &[u8]) -> Result<[u8; 3], SateError> {
+    let null_pos = cursor
+        .iter()
+        .position(|&b| b == 0)
+        .ok_or(SateError::NoNullTerminator)?;
+    let mut name = [b' '; 3];
+    let copy_len = null_pos.min(3);
+    name[..copy_len].copy_from_slice(&cursor[..copy_len]);
+    *cursor = &cursor[null_pos + 1..];
+    Ok(name)
+}
+
+/// SLEB128 SOCD offsets, one per observation code.
+fn read_offsets(cursor: &mut &[u8], num_obs_codes: usize) -> Result<Vec<i64>, SateError> {
+    let mut socd_offsets = Vec::with_capacity(num_obs_codes);
+    for _ in 0..num_obs_codes {
+        socd_offsets.push(read_sleb128(cursor)?);
+    }
+    Ok(socd_offsets)
+}
+
 /// Parse a `SATE` chunk payload.
 ///
 /// * `payload` — raw bytes of the chunk (after the FOURCC + length framing).
@@ -62,25 +92,8 @@ pub struct Sate {
 ///   that extend past this bound are silently clamped.
 pub fn parse(payload: &[u8], num_obs_codes: usize, total_epochs: usize) -> Result<Sate, SateError> {
     let mut cursor: &[u8] = payload;
-
-    // Null-terminated satellite name.
-    let null_pos = cursor
-        .iter()
-        .position(|&b| b == 0)
-        .ok_or(SateError::NoNullTerminator)?;
-    let sat_name = {
-        let mut name = [b' '; 3];
-        let copy_len = null_pos.min(3);
-        name[..copy_len].copy_from_slice(&cursor[..copy_len]);
-        name
-    };
-    cursor = &cursor[null_pos + 1..];
-
-    // SLEB128 SOCD offsets, one per observation code.
-    let mut socd_offsets = Vec::with_capacity(num_obs_codes);
-    for _ in 0..num_obs_codes {
-        socd_offsets.push(read_sleb128(&mut cursor)?);
-    }
+    let sat_name = read_name(&mut cursor)?;
+    let socd_offsets = read_offsets(&mut cursor, num_obs_codes)?;
 
     // Epoch presence RLE.
     let num_runs_m1 = read_uleb128(&mut cursor)?;

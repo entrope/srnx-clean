@@ -378,9 +378,9 @@ impl Column {
     }
 }
 
-/// Resolve a satellite's observation values and indicators. Times are continuous
-/// timestamps in units of `1 / units_per_second` seconds (the epoch chunk's
-/// time unit), one per satellite epoch.
+/// Resolve all of a satellite's observation values and indicators. Times
+/// are continuous timestamps in units of `1 / units_per_second` seconds (the
+/// epoch chunk's time unit), one per satellite epoch.
 pub fn decode_satellite(
     columns: &[Option<Column>],
     codes: &[ObsCode],
@@ -390,137 +390,303 @@ pub fn decode_satellite(
     if columns.len() != codes.len() {
         return Err(Soc2Error::Invalid("observation code count mismatch"));
     }
-    let mut decoded = vec![None; columns.len()];
-    let mut visiting = vec![false; columns.len()];
+    let mut cache = SatelliteColumns::new(codes, times, units_per_second);
+    let mut load = |i: usize| Ok::<_, Soc2Error>(columns[i].clone());
     for i in 0..columns.len() {
-        resolve(
-            i,
-            columns,
-            times,
-            units_per_second,
-            &mut decoded,
-            &mut visiting,
-        )?;
+        cache.decode(i, &mut load)?;
     }
-    // SSI depends only on values; resolve after all value columns, allowing SSI cycles.
-    for (i, column) in columns.iter().enumerate() {
-        if let Some(Column::Soc2(s)) = column {
-            if let Some(j) = s.ssi_reference {
-                if j == i {
-                    return Err(Soc2Error::Invalid("self SSI reference"));
-                }
-                if !codes.get(j).is_some_and(|c| c.as_str().starts_with('S')) {
-                    return Err(Soc2Error::Invalid(
-                        "SSI reference is not a signal-strength code",
-                    ));
-                }
-                let reference = decoded[j].as_ref();
-                let mut ssi = s.data.ssi.clone();
-                for (k, ch) in ssi.iter_mut().enumerate() {
-                    if *ch == 11 {
-                        let reference = reference
-                            .ok_or(Soc2Error::Invalid("predicted SSI reference absent"))?;
-                        let v = reference.values[k];
-                        if v == ABSENT {
-                            return Err(Soc2Error::Invalid("predicted SSI reference absent"));
-                        }
-                        let strength = i128::from(v) * i128::from(reference.scale);
-                        *ch = b'0' + u8::try_from(strength.div_euclid(6000).clamp(1, 9)).unwrap();
-                    }
-                }
-                decoded[i].as_mut().unwrap().ssi = ssi;
-            }
-        }
-    }
-    Ok(decoded)
+    Ok(cache.into_columns())
 }
 
-fn resolve(
-    i: usize,
-    columns: &[Option<Column>],
-    times: &[i128],
+/// One observation code's column in a [`SatelliteColumns`] cache.
+enum Slot {
+    Unloaded,
+    /// Zero SATE offset: never observed.
+    Missing,
+    /// Parsed, with values not yet resolved.
+    Parsed(Column),
+    /// Values resolved.  `ssi_reference` is cleared once predicted SSIs are
+    /// filled in; `requested` marks columns passed to `decode`.
+    Decoded {
+        data: Socd,
+        predictor: Predictor,
+        ssi_reference: Option<usize>,
+        requested: bool,
+    },
+}
+
+/// Lazily decoded observation columns of one satellite, indexed by the
+/// position of their observation code in the RHDR list (the SATE order,
+/// which predictor references also use).
+///
+/// Decoding a column also decodes the columns it references for value or
+/// SSI prediction.  Every decoded column is kept, so a reference shared by
+/// several columns is decoded once.  After an error the cache is
+/// inconsistent and should be dropped.
+pub struct SatelliteColumns<'a> {
+    codes: &'a [ObsCode],
+    times: &'a [i128],
     units_per_second: u64,
-    decoded: &mut [Option<Socd>],
-    visiting: &mut [bool],
-) -> Result<(), Soc2Error> {
-    if decoded[i].is_some() || columns[i].is_none() {
-        return Ok(());
-    }
-    if visiting[i] {
-        return Err(Soc2Error::Invalid("cyclic predictor references"));
-    }
-    visiting[i] = true;
-    let column = columns[i].as_ref().unwrap();
-    let mut data = match column {
-        Column::Socd(s) => s.clone(),
-        Column::Soc2(s) => s.data.clone(),
-    };
-    if data.values.len() != times.len() {
-        return Err(Soc2Error::Invalid(
-            "column count differs from satellite epochs",
-        ));
-    }
-    if let Column::Soc2(s) = column {
-        if s.unpredicted.len() != times.len() || data.ssi.len() != times.len() || data.scale == 0 {
-            return Err(Soc2Error::Invalid("invalid residual column metadata"));
+    slots: Vec<Slot>,
+}
+
+impl<'a> SatelliteColumns<'a> {
+    /// `times` are continuous timestamps in units of `1 / units_per_second`
+    /// seconds (the epoch chunk's time unit), one per satellite epoch.
+    #[must_use]
+    pub fn new(codes: &'a [ObsCode], times: &'a [i128], units_per_second: u64) -> Self {
+        Self {
+            codes,
+            times,
+            units_per_second,
+            slots: codes.iter().map(|_| Slot::Unloaded).collect(),
         }
     }
-    if let Some(j) = column.predictor().reference() {
-        if j == i {
-            return Err(Soc2Error::Invalid("self predictor reference"));
-        }
-        let reference = columns
-            .get(j)
-            .ok_or(Soc2Error::Invalid("predictor index out of range"))?;
-        if let Some(base) = reference.as_ref().and_then(|c| c.predictor().reference()) {
-            if base == i
-                || !columns.get(base).is_some_and(|c| {
-                    c.as_ref()
-                        .map_or(true, |c| c.predictor() == Predictor::None)
-                })
-            {
-                return Err(Soc2Error::Invalid(
-                    "prediction chain exceeds two steps or is cyclic",
-                ));
+
+    /// Decode column `i` with its values and indicators resolved, using
+    /// `load(j)` to parse column `j` (`None` for a zero SATE offset) the
+    /// first time it is needed.  Returns `None` for a zero SATE offset.
+    ///
+    /// # Panics
+    ///
+    /// If `i` is not less than the number of observation codes.
+    pub fn decode<E: From<Soc2Error>>(
+        &mut self,
+        i: usize,
+        load: &mut impl FnMut(usize) -> Result<Option<Column>, E>,
+    ) -> Result<Option<&Socd>, E> {
+        self.values(i, load)?;
+        self.ssi(i, load)?;
+        Ok(match &mut self.slots[i] {
+            Slot::Decoded {
+                data, requested, ..
+            } => {
+                *requested = true;
+                Some(data)
             }
+            _ => None,
+        })
+    }
+
+    /// The columns passed to [`decode`](Self::decode), in RHDR order;
+    /// `None` for the others and for zero SATE offsets.
+    #[must_use]
+    pub fn into_columns(self) -> Vec<Option<Socd>> {
+        self.slots
+            .into_iter()
+            .map(|slot| match slot {
+                Slot::Decoded {
+                    data,
+                    requested: true,
+                    ..
+                } => Some(data),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn load<E>(
+        &mut self,
+        i: usize,
+        load: &mut impl FnMut(usize) -> Result<Option<Column>, E>,
+    ) -> Result<(), E> {
+        if let Slot::Unloaded = self.slots[i] {
+            self.slots[i] = load(i)?.map_or(Slot::Missing, Slot::Parsed);
         }
-        resolve(j, columns, times, units_per_second, decoded, visiting)?;
-        let reference = decoded[j].as_ref();
-        let Column::Soc2(s) = column else {
-            unreachable!()
+        Ok(())
+    }
+
+    /// Predictor of a loaded column.
+    fn predictor(&self, i: usize) -> Predictor {
+        match &self.slots[i] {
+            Slot::Parsed(column) => column.predictor(),
+            Slot::Decoded { predictor, .. } => *predictor,
+            Slot::Unloaded | Slot::Missing => Predictor::None,
+        }
+    }
+
+    fn decoded(&self, i: usize) -> Option<&Socd> {
+        match &self.slots[i] {
+            Slot::Decoded { data, .. } => Some(data),
+            _ => None,
+        }
+    }
+
+    /// Resolve column `i`'s values, after those of its predictor reference.
+    fn values<E: From<Soc2Error>>(
+        &mut self,
+        i: usize,
+        load: &mut impl FnMut(usize) -> Result<Option<Column>, E>,
+    ) -> Result<(), E> {
+        self.load(i, load)?;
+        let Slot::Parsed(column) = &self.slots[i] else {
+            return Ok(());
         };
-        for (k, value) in data.values.iter_mut().enumerate() {
-            if *value == ABSENT {
-                continue;
+        let n = self.times.len();
+        let data = match column {
+            Column::Socd(s) => s,
+            Column::Soc2(s) => &s.data,
+        };
+        if data.values.len() != n {
+            return Err(Soc2Error::Invalid("column count differs from satellite epochs").into());
+        }
+        if let Column::Soc2(s) = column {
+            if s.unpredicted.len() != n || data.ssi.len() != n || data.scale == 0 {
+                return Err(Soc2Error::Invalid("invalid residual column metadata").into());
             }
-            let p = reference
-                .map(|r| prediction(s.predictor, k, r, times, units_per_second))
-                .transpose()?
-                .flatten();
-            if s.unpredicted[k] != p.is_none() {
-                return Err(Soc2Error::Invalid(
-                    "unpredicted block disagrees with prediction availability",
-                ));
+        }
+        let predictor = column.predictor();
+        if let Some(j) = predictor.reference() {
+            if j == i {
+                return Err(Soc2Error::Invalid("self predictor reference").into());
             }
-            if let Some(p) = p {
-                let q = rounded(p, i128::from(data.scale))?;
-                *value = i64::try_from(
-                    i128::from(*value)
-                        .checked_add(q)
-                        .ok_or(Soc2Error::Overflow)?,
-                )
-                .map_err(|_| Soc2Error::Overflow)?;
-                if *value == ABSENT {
+            if j >= self.slots.len() {
+                return Err(Soc2Error::Invalid("predictor index out of range").into());
+            }
+            self.load(j, load)?;
+            // Checking the chain before recursing bounds the recursion.
+            if let Some(base) = self.predictor(j).reference() {
+                if base != i && base < self.slots.len() {
+                    self.load(base, load)?;
+                }
+                if base == i || base >= self.slots.len() || self.predictor(base) != Predictor::None
+                {
                     return Err(Soc2Error::Invalid(
-                        "present observation equals absent sentinel",
-                    ));
+                        "prediction chain exceeds two steps or is cyclic",
+                    )
+                    .into());
                 }
             }
+            self.values(j, load)?;
+        }
+        let Slot::Parsed(column) = std::mem::replace(&mut self.slots[i], Slot::Missing) else {
+            unreachable!()
+        };
+        let reference = predictor.reference().and_then(|j| self.decoded(j));
+        let (data, ssi_reference) = match column {
+            Column::Socd(data) => (data, None),
+            Column::Soc2(s) => {
+                let ssi_reference = s.ssi_reference;
+                (
+                    apply_prediction(s, reference, self.times, self.units_per_second)?,
+                    ssi_reference,
+                )
+            }
+        };
+        self.slots[i] = Slot::Decoded {
+            data,
+            predictor,
+            ssi_reference,
+            requested: false,
+        };
+        Ok(())
+    }
+
+    /// Fill in column `i`'s predicted SSIs.  SSI depends only on values, so
+    /// SSI references may be cyclic.
+    fn ssi<E: From<Soc2Error>>(
+        &mut self,
+        i: usize,
+        load: &mut impl FnMut(usize) -> Result<Option<Column>, E>,
+    ) -> Result<(), E> {
+        let Slot::Decoded {
+            data,
+            ssi_reference: Some(j),
+            ..
+        } = &self.slots[i]
+        else {
+            return Ok(());
+        };
+        let j = *j;
+        if j == i {
+            return Err(Soc2Error::Invalid("self SSI reference").into());
+        }
+        if !self
+            .codes
+            .get(j)
+            .is_some_and(|c| c.as_str().starts_with('S'))
+        {
+            return Err(Soc2Error::Invalid("SSI reference is not a signal-strength code").into());
+        }
+        if data.ssi.contains(&11) {
+            self.values(j, load)?;
+        }
+        let Slot::Decoded { data, .. } = &self.slots[i] else {
+            unreachable!()
+        };
+        let reference = self.decoded(j);
+        let mut ssi = data.ssi.clone();
+        for (k, ch) in ssi.iter_mut().enumerate() {
+            if *ch == 11 {
+                let reference =
+                    reference.ok_or(Soc2Error::Invalid("predicted SSI reference absent"))?;
+                let v = reference.values[k];
+                if v == ABSENT {
+                    return Err(Soc2Error::Invalid("predicted SSI reference absent").into());
+                }
+                let strength = i128::from(v) * i128::from(reference.scale);
+                *ch = b'0' + u8::try_from(strength.div_euclid(6000).clamp(1, 9)).unwrap();
+            }
+        }
+        if let Slot::Decoded {
+            data,
+            ssi_reference,
+            ..
+        } = &mut self.slots[i]
+        {
+            data.ssi = ssi;
+            *ssi_reference = None;
+        }
+        Ok(())
+    }
+}
+
+/// Add the predictions from `reference` (already resolved) to a column's
+/// residuals.
+fn apply_prediction(
+    column: Soc2,
+    reference: Option<&Socd>,
+    times: &[i128],
+    units_per_second: u64,
+) -> Result<Socd, Soc2Error> {
+    let Soc2 {
+        mut data,
+        predictor,
+        unpredicted,
+        ..
+    } = column;
+    if predictor.reference().is_none() {
+        return Ok(data);
+    }
+    for (k, value) in data.values.iter_mut().enumerate() {
+        if *value == ABSENT {
+            continue;
+        }
+        let p = reference
+            .map(|r| prediction(predictor, k, r, times, units_per_second))
+            .transpose()?
+            .flatten();
+        if unpredicted[k] != p.is_none() {
+            return Err(Soc2Error::Invalid(
+                "unpredicted block disagrees with prediction availability",
+            ));
+        }
+        if let Some(p) = p {
+            let q = rounded(p, i128::from(data.scale))?;
+            *value = i64::try_from(
+                i128::from(*value)
+                    .checked_add(q)
+                    .ok_or(Soc2Error::Overflow)?,
+            )
+            .map_err(|_| Soc2Error::Overflow)?;
+            if *value == ABSENT {
+                return Err(Soc2Error::Invalid(
+                    "present observation equals absent sentinel",
+                ));
+            }
         }
     }
-    decoded[i] = Some(data);
-    visiting[i] = false;
-    Ok(())
+    Ok(data)
 }
 
 #[cfg(test)]
@@ -679,6 +845,41 @@ mod tests {
         assert_eq!(out[1].as_ref().unwrap().values, [3, -3, 1]);
         // First rounding: +/-3/2 -> +/-2; scale rounding: +/-2/2 -> +/-1.
         assert_eq!(out[0].as_ref().unwrap().values, [2, -2, 1]);
+    }
+
+    #[test]
+    fn lazy_decode_loads_only_requested_columns_and_references() {
+        let columns = [
+            column(
+                &[3, 4],
+                1,
+                Predictor::Value {
+                    reference: 2,
+                    num: 1,
+                    den: 1,
+                },
+                &[false; 2],
+            ),
+            Some(Column::Socd(data(&[7, 8], 1))),
+            Some(Column::Socd(data(&[10, 20], 1))),
+        ];
+        let codes = codes(&["C1", "L2", "L1"]);
+        let mut loaded = Vec::new();
+        let mut cache = SatelliteColumns::new(&codes, &[0, 1], U7);
+        let mut load = |i: usize| {
+            loaded.push(i);
+            Ok::<_, Soc2Error>(columns[i].clone())
+        };
+        let c1 = cache.decode(0, &mut load).unwrap().unwrap();
+        assert_eq!(c1.values, [13, 24]);
+        // The shared reference is decoded once.
+        cache.decode(2, &mut load).unwrap();
+        assert_eq!(loaded, [0, 2]);
+        // Only requested columns are returned, not the unrequested L2.
+        let out = cache.into_columns();
+        assert_eq!(out[0].as_ref().unwrap().values, [13, 24]);
+        assert!(out[1].is_none());
+        assert_eq!(out[2].as_ref().unwrap().values, [10, 20]);
     }
 
     #[test]
