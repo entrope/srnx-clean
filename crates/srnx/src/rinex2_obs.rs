@@ -414,6 +414,17 @@ fn parse_int_field(line: &str, start: usize, width: usize) -> i64 {
     }
 }
 
+/// Parse a fixed-width floating-point field (already sliced out of the
+/// line), interpreting blank/missing as zero.  Returns `None` if the field
+/// is non-blank but not a finite number.
+fn parse_float_field(field: &str) -> Option<f64> {
+    let field = field.trim();
+    if field.is_empty() {
+        return Some(0.0);
+    }
+    field.parse::<f64>().ok().filter(|v| v.is_finite())
+}
+
 /// Parse the epoch / satellite header line.
 ///
 /// Returns `(EpochRecord, flag, num_entries)` where `num_entries` is the
@@ -462,7 +473,9 @@ fn parse_epoch_header(line: &str, line_no: usize) -> Result<(EpochRecord, u8, us
 
     // Seconds: F11.7 at positions 15-25.  Parse as f64 then convert to e7.
     let sec_str = line.get(15..line.len().min(26)).unwrap_or("");
-    let sec_f64: f64 = sec_str.trim().parse().unwrap_or(0.0);
+    let sec_f64 = parse_float_field(sec_str)
+        .filter(|&s| s >= 0.0)
+        .ok_or(Rinex2Error::BadEpochHeader(line_no))?;
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let seconds_e7 = (sec_f64 * 1e7).round() as u64;
 
@@ -496,9 +509,15 @@ fn parse_epoch_header(line: &str, line_no: usize) -> Result<(EpochRecord, u8, us
     // Receiver clock offset: F12.9 at positions 68-79.
     let clock_offset_e12 = if line.len() > 68 {
         let clk_str = line.get(68..line.len().min(80)).unwrap_or("");
-        let clk_f64: f64 = clk_str.trim().parse().unwrap_or(0.0);
+        let clk_sec = parse_float_field(clk_str).ok_or(Rinex2Error::BadEpochHeader(line_no))?;
+        let clk_ps = (clk_sec * 1e12).round();
+        // Reject values (e.g. in exponent notation) that would saturate.
+        #[allow(clippy::cast_precision_loss)]
+        if !(i64::MIN as f64..i64::MAX as f64).contains(&clk_ps) {
+            return Err(Rinex2Error::BadEpochHeader(line_no));
+        }
         #[allow(clippy::cast_possible_truncation)]
-        let raw = (clk_f64 * 1e12).round() as i64;
+        let raw = clk_ps as i64;
         raw
     } else {
         0
@@ -696,6 +715,59 @@ mod tests {
         assert_eq!(obs.value, -1_010_755);
         assert_eq!(obs.lli, b' ');
         assert_eq!(obs.ssi, b' ');
+    }
+
+    /// 12-satellite epoch header from at012000, up to (not including) the
+    /// receiver clock offset field at positions 68-79.
+    const EPOCH_HEADER: &str =
+        " 20  7 18  0  0 30.0000000  0 29G13R10E12E01R03E26G16G11R02G08E31G27";
+
+    #[test]
+    fn parse_epoch_header_seconds_and_clock() {
+        let line = format!("{EPOCH_HEADER}-0.123456789");
+        let (rec, flag, num_entries) = parse_epoch_header(&line, 7).unwrap();
+        assert_eq!(rec.seconds_e7, 300_000_000);
+        assert_eq!(rec.clock_offset_e12, -123_456_789_000);
+        assert_eq!(flag, 0);
+        assert_eq!(num_entries, 29);
+
+        // Blank clock field: no offset.
+        let line = format!("{EPOCH_HEADER}            ");
+        let (rec, _, _) = parse_epoch_header(&line, 7).unwrap();
+        assert_eq!(rec.clock_offset_e12, 0);
+    }
+
+    #[test]
+    fn parse_epoch_header_garbled_seconds() {
+        for garbled in ["30.00x0000", "30.0.00000", "        NaN", "       -1.0"] {
+            let line = format!(
+                "{}{garbled:>11}{}",
+                &EPOCH_HEADER[..15],
+                &EPOCH_HEADER[26..]
+            );
+            assert_eq!(line.len(), EPOCH_HEADER.len(), "{garbled:?}");
+            assert!(
+                matches!(
+                    parse_epoch_header(&line, 7),
+                    Err(Rinex2Error::BadEpochHeader(7))
+                ),
+                "{garbled:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_epoch_header_garbled_clock() {
+        for garbled in ["-0.12x456789", "        inf", "     1e300"] {
+            let line = format!("{EPOCH_HEADER}{garbled:>12}");
+            assert!(
+                matches!(
+                    parse_epoch_header(&line, 7),
+                    Err(Rinex2Error::BadEpochHeader(7))
+                ),
+                "{garbled:?}"
+            );
+        }
     }
 
     #[test]
