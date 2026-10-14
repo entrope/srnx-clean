@@ -1,8 +1,9 @@
 # srnx-clean
 
 Clean-room Rust implementation of a **Succinct RINEX (SRNX)** reader, plus
-RINEX v2 and v3/v4 observation readers, plus a utility to compare two files
-(SRNX or RINEX) for semantic equivalence.
+RINEX v2 and v3/v4 observation readers, a Compact RINEX (Hatanaka) reader,
+and a utility to compare two files (SRNX, RINEX or Compact RINEX) for
+semantic equivalence.
 
 ## Clean-room rule
 
@@ -18,6 +19,12 @@ Allowed inputs are:
 
 If a question can only be answered by reading the reference source, ask the
 user instead of looking.
+
+The clean-room rule covers SRNX only. For Compact RINEX the user has
+authorized the Hatanaka papers (`~/Documents/GNSS_Specs/Hatanaka_v2_gps96_a2_10.pdf`
+for CRINEX 1.0, `Hatanaka_000045517.pdf` for 3.0) and the RNXCMP 4.2.0
+source in `~/src/RNXCMP_4.2.0_src/source/` (the only description of
+CRINEX 3.1).
 
 ## Repository layout
 
@@ -52,6 +59,14 @@ behaviour. **Do not read their source.** Treat them as oracles.
 - `srnx_scan <file.srnx>...` — prints chunk-level summary statistics
   (FOURCC counts, scale factors, delta orders, block-header histogram). Good
   for sanity-checking a parser without exposing observation values.
+- `crx2rnx - < in.crx > out.rnx` / `rnx2crx - < in.rnx > out.crx` — RNXCMP
+  4.2.0 (source may be read, see above). `crates/srnx/tests/crinex.rs` checks
+  our output byte-for-byte against `crx2rnx` (override with `$CRX2RNX`).
+  Stock RNXCMP 4.2.0 `rnx2crx` dies with SIGTRAP (exit 133) on macOS for any
+  RINEX v3/v4 epoch with a clock offset: `read_clock`'s 4-byte overlapping
+  `strncpy` is caught by fortified libc (v2's 1-byte copy doesn't overlap).
+  The local build (`~/bin` and `~/src/RNXCMP_4.2.0_src/source/`) is patched
+  to use `memmove` and is fine for regenerating `tests/data/*.crx`.
 
 All `.srnx` files in `rnx-data/` are current-format and parse cleanly with
 `srnx_scan`. If a fixture ever fails to parse, suspect a stale SRNX-revision
@@ -111,6 +126,23 @@ RINEX text-format gotchas (all versions unless noted):
   limit. Within an epoch, `srnx2rnx` sorts satellites, so line order is not
   semantic.
 
+Compact RINEX gotchas (`crinex.rs`):
+
+- `crinex::decompress` reproduces `crx2rnx` output exactly, including its
+  quirks: no leading zero in values below one (`-.123`, `.000123456`).
+- CRINEX 3.1 appends a space and the picosecond text diff to the clock
+  line. An empty diff means "unchanged", so an epoch without picoseconds
+  after one with them cannot be represented; `crx2rnx` repeats the last
+  digits.
+- The epoch-line text state is right-trimmed after every repair, and
+  `repair` never shortens the state; the compressor writes `&` for blanked
+  characters.
+- In CRINEX 1.0, a blank observation field also blanks its LLI/SSI; in 3.x
+  the flags are independent of the data, so flags-only fields exist.
+- After an event (flag > 1) the next epoch must be a reset (`&` / `>` in
+  column 1). Events may carry `# / TYPES OF OBSERV` / `SYS / # / OBS TYPES`
+  records that change the field counts.
+
 ## Development conventions
 
 - Rust edition 2021, stable toolchain. MSRV: 1.75 (`rust-version` in
@@ -144,5 +176,5 @@ RINEX text-format gotchas (all versions unless noted):
 ## Out of scope for MVP
 
 - Writing SRNX (encoder).
-- Hatanaka (`.crx`) compression.
+- Writing Hatanaka (`.crx`) files (reading is supported).
 - Streaming/async APIs — MVP is mmap or full read into memory.

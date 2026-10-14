@@ -1,0 +1,64 @@
+3.1                 COMPACT RINEX FORMAT                    CRINEX VERS   / TYPE
+RNX2CRX ver.4.2.0                       14-Oct-26 01:00     CRINEX PROG / DATE
+     4.02           OBSERVATION DATA    M                   RINEX VERSION / TYPE
+srnx-clean fixture  srnx-clean          20241001 000000 UTC PGM / RUN BY / DATE
+Synthetic RINEX 4.02 file exercising the optional 1X,I5.5   COMMENT
+picosecond epoch extension (Table A3).  Values are made up. COMMENT
+TEST00XXX                                                   MARKER NAME
+NON_GEODETIC                                                MARKER TYPE
+srnx-clean          srnx-clean                              OBSERVER / AGENCY
+0001                SYNTHETIC RX        1.0                 REC # / TYPE / VERS
+0001                SYNTHETIC ANT   NONE                    ANT # / TYPE
+  4091423.7190   368380.6530  4863179.9940                  APPROX POSITION XYZ
+        0.0000        0.0000        0.0000                  ANTENNA: DELTA H/E/N
+G    4 C1C L1C D1C S1C                                      SYS / # / OBS TYPES
+E    4 C1C L1C D1C S1C                                      SYS / # / OBS TYPES
+R    4 C1C L1C D1C S1C                                      SYS / # / OBS TYPES
+DBHZ                                                        SIGNAL STRENGTH UNIT
+     1.000                                                  INTERVAL
+  2024    10     1     0     0    0.0000001     GPS         TIME OF FIRST OBS
+  2024    10     1     0     1    2.0000001     GPS         TIME OF LAST OBS
+    37                                                      LEAP SECONDS
+  3 R03  5 R13 -2 R24  2                                    GLONASS SLOT / FRQ #
+                                                            END OF HEADER
+> 2024 10 01 00 00  0.0000001  0  4      G05G12E11R03
+3&100001 00001
+3&23629347915 3&124173212411 3&-1234567 3&45250 &7&7&7&&
+3&20891534648 3&109785522303 3&987654 3&48000 &7&7&7&&
+3&25180322100 3&132322011876 3&-456789 3&42750 &7&7&7&&
+3&21345678576 3&114076432985 3&2345678 3&40500 &7&7&7&&
+                    1
+23455 23456
+200 1234567 1 0
+200 -987654 1 0
+200 456789 1 0
+200 -2345678 1 0
+> 2024 10 01 00 00  1.5000000  5  1                      50000
+EXTERNAL EVENT AT 00:00:01.500000050000                     COMMENT
+> 2024 10 01 00 00  2.0000000  0  3      G05G12E11
+ 99999
+3&23629348315 3&124175681545 3&-1234565 3&45250 &7&7&7&&
+3&20891535048 3&109783546995 3&987656 3&48000 &7&7&7&&
+3&25180322500 3&132322925454 3&-456787 3&42750 &7&7&7&&
+                   59 9999999     4               R03
+3&-1
+200 1234567 1 0
+200 -987654 1 0   1
+200 456789 1 0
+3&21345679176 3&114069395951 3&2345681 3&40500 &7&7&7&&
+                 1 &0 0000000
+1 00000
+0 0 0 0
+0 0 0 0   &
+0 0 0 0
+200 -2345678 1 0
+                    1       1     2            &&&&&&
+99999
+0 0 0 0
+0 0 0 0
+                    2             4            E11R03
+-199992 00007
+0 0 0 0
+0 0 0 0
+3&25180323300 3&132324752610 3&-456783 3&42750 &7&7&7&&
+3&21345679776 3&114062358917 3&2345684 3&40500 &7&7&7&&

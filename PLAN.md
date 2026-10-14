@@ -189,7 +189,7 @@ Equality compares the normalized model, not byte-level file contents.
 
 ## Estimated total: ~8–10 working days to MVP
 
-Post-MVP candidates (not in this plan): SRNX writer, Hatanaka decoder,
+Post-MVP candidates (not in this plan): SRNX writer,
 streaming / mmap-friendly chunked iteration, Python bindings.
 
 Done after MVP: RINEX v3/v4 observation reader (`rinex3_obs.rs`, covering
@@ -198,3 +198,7 @@ Done after MVP: RINEX v3/v4 observation reader (`rinex3_obs.rs`, covering
 
 SRNX revision 1.2: `EPO2` epoch chunk (picosecond epochs) in `epoc.rs`,
 with SOC2 rate predictors using the epoch chunk's time unit.
+
+Compact RINEX (Hatanaka) reader: `crinex.rs` decompresses CRINEX 1.0, 3.0
+and 3.1 to RINEX text (byte-identical to RNXCMP 4.2.0 `crx2rnx`) and parses
+it with the RINEX v2 or v3/v4 reader; wired into `srnx-diff`.

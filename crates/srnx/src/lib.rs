@@ -1,10 +1,11 @@
-//! Clean-room reader for the Succinct RINEX (SRNX) format and RINEX v2, v3
-//! and v4 observation files.
+//! Clean-room reader for the Succinct RINEX (SRNX) format, RINEX v2, v3 and
+//! v4 observation files, and Compact RINEX (Hatanaka) files.
 //!
 //! See `CLAUDE.md` and `PLAN.md` at the workspace root for scope and roadmap.
 
 pub mod chunk;
 mod compat;
+pub mod crinex;
 pub mod diff;
 pub mod digest;
 pub mod epoc;

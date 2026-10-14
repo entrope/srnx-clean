@@ -1,0 +1,61 @@
+3.0                 COMPACT RINEX FORMAT                    CRINEX VERS   / TYPE
+RNX2CRX ver.4.2.0                       14-Oct-26 01:00     CRINEX PROG / DATE
+     3.04           OBSERVATION DATA    M                   RINEX VERSION / TYPE
+srnx-clean          srnx-clean          20241001 000000 UTC PGM / RUN BY / DATE
+Synthetic RINEX 3.04 file for Compact RINEX tests.          COMMENT
+TEST                                                        MARKER NAME
+srnx-clean          srnx-clean                              OBSERVER / AGENCY
+0001                SYNTHETIC RX        1.0                 REC # / TYPE / VERS
+0001                SYNTHETIC ANT   NONE                    ANT # / TYPE
+  4091423.7190   368380.6530  4863179.9940                  APPROX POSITION XYZ
+        0.0000        0.0000        0.0000                  ANTENNA: DELTA H/E/N
+G    3 C1C L1C S1C                                          SYS / # / OBS TYPES
+R    2 C1C L1C                                              SYS / # / OBS TYPES
+     1.000                                                  INTERVAL
+  2024    10     1     0     0    0.0000000     GPS         TIME OF FIRST OBS
+                                                            END OF HEADER
+> 2024 10 01 00 00  0.0000000  0  3      G01G02R03
+3&123456
+3&20001000000 3&100005000000 3&45000 &6&6&&
+3&20002000000 3&100010000000 3&44000 &6&6&&
+3&21000000000 3&112000000000 &5&5
+                    1
+100
+1000 5000 0
+ 5000 250  &
+1000 5000
+                    2             2            &&&
+
+0 0 0
+3&20002002000 0 -500  6
+                    3             3      R 3  1G02
+3&-123756
+3&21000003000 3&112000015000 &5&5
+0 0 0
+1000 0 750 1 1
+> 2024 10 01 00 00  3.5000000  4  2
+G    2 C1C L1C                                              SYS / # / OBS TYPES
+OBSERVATION TYPES CHANGED                                   COMMENT
+> 2024 10 01 00 00  4.0000000  1  2      G01G02
+3&123856
+3&20001004000 3&100005020000 1&1&
+3&20002004000 3&100010020000 &&&&
+                    5          0
+100
+1000 3&990005025000 &6&6
+1000 5000  6 6
+> 2024 10 01 00 00  5.0000000  6  1
+G01  20001005.00016 990005025.00016
+> 2024 10 01 00 00  6.0000000  0  2      G01G02
+3&124056
+  &84&
+3&20002006000 3&100010030000 &6&6
+                    7
+100
+3&20001007000 3&990005035000  7&7
+3&-123 5000
+>                              3  1
+NEW SITE                                                    MARKER NAME
+> 2024 10 01 00 00  9.0000000  0  1      G02
+3&124356
+3&20002009000 3&100010045000 &6&6

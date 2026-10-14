@@ -1,0 +1,40 @@
+1.0                 COMPACT RINEX FORMAT                    CRINEX VERS   / TYPE
+RNX2CRX ver.4.2.0                       14-Oct-26 01:00     CRINEX PROG / DATE
+     2.11           OBSERVATION DATA    G (GPS)             RINEX VERSION / TYPE
+srnx-clean          srnx-clean          20241001 000000     PGM / RUN BY / DATE
+Synthetic RINEX 2.11 file with flag-1 and flag-6 records.   COMMENT
+TEST                                                        MARKER NAME
+0001                SYNTHETIC RX        1.0                 REC # / TYPE / VERS
+0001                SYNTHETIC ANT                           ANT # / TYPE
+  4091423.7190   368380.6530  4863179.9940                  APPROX POSITION XYZ
+        0.0000        0.0000        0.0000                  ANTENNA: DELTA H/E/N
+     1     1                                                WAVELENGTH FACT L1/2
+     2    C1    L1                                          # / TYPES OF OBSERV
+     1.000                                                  INTERVAL
+  2024    10     1     0     0    0.0000000     GPS         TIME OF FIRST OBS
+                                                            END OF HEADER
+&24 10  1  0  0  0.0000000  0  2G01G02
+
+3&20001000000 3&100005000000  6 6
+3&20002000000 3&100010000000  6 6
+                 1          1 13      G03G04G05G06G07G08G09G10G11G12G13
+
+1000 5000
+1000 5000
+3&20003001000 3&100015005000  6 6
+3&20004001000 3&100020005000  6 6
+3&20005001000 3&100025005000  6 6
+3&20006001000 3&100030005000  6 6
+3&20007001000 3&100035005000  6 6
+3&20008001000 3&100040005000  6 6
+3&20009001000 3&100045005000  6 6
+3&20010001000 3&100050005000  6 6
+3&20011001000 3&100055005000  6 6
+3&20012001000 3&100060005000  6 6
+3&20013001000 3&100065005000  6 6
+&24 10  1  0  0  2.0000000  6  1G01
+                         1.000 1
+&24 10  1  0  0  2.0000000  0  2G01G02
+
+3&20001002000 3&100005010000  6 6
+3&20002002000 3&100010010000  6 6
