@@ -41,6 +41,7 @@ use thiserror::Error;
 use crate::model::{
     Catalog, EpochRecord, EventRecord, Obs, ObsFile, SatId, SignalFilter, SignalMasks,
 };
+use crate::rinex3_obs::parse_sat_id;
 use crate::rinex_header::{self, Header, HeaderError, HeaderText, ObsCode, SatSystem};
 
 #[derive(Debug, Error)]
@@ -160,33 +161,27 @@ pub fn parse(input: &[u8], filter: Option<SignalFilter<'_>>) -> Result<ObsFile, 
             continue;
         }
 
-        // Flags 0, 1, 6: epoch header carries a satellite PRN list.
+        // Flags 0, 1, 6: epoch header carries a satellite PRN list, continued
+        // on following lines for more than 12 satellites.
         let mut sats: Vec<SatId> = Vec::with_capacity(num_entries);
-        collect_sats(line, &mut sats); // 'line' still refers to the header line
-
-        // Continuation lines for >12 satellites.
+        // 'line' still refers to the header line.
+        let mut list_ok = collect_sats(line, num_entries.min(12), &mut sats).is_some();
         let mut cont_malformed = false;
-        while sats.len() < num_entries && pos < data_lines.len() {
+        while list_ok && sats.len() < num_entries && pos < data_lines.len() {
             // Each continuation line must actually look like one.
             if !is_continuation_line(data_lines[pos]) {
                 cont_malformed = true;
                 break;
             }
-            let before = sats.len();
-            collect_sats(data_lines[pos], &mut sats);
-            // Stop if this continuation line added no satellites.
-            if sats.len() == before {
-                break;
-            }
+            let want = (num_entries - sats.len()).min(12);
+            list_ok = collect_sats(data_lines[pos], want, &mut sats).is_some();
             pos += 1;
         }
-        sats.truncate(num_entries);
 
         // --- Validate epoch structure before committing ---
         //
         // A well-formed epoch has:
-        //   1. No more satellite IDs than the claimed num_entries (fewer is OK
-        //      for non-conforming files; claimed count still governs obs lines).
+        //   1. Exactly num_entries valid satellite IDs, as rnx2srnx requires.
         //   2. No epoch-header line embedded in the observation block.
         //   3. The line after the observation block is an epoch header (or EOF).
         //
@@ -195,29 +190,26 @@ pub fn parse(input: &[u8], filter: Option<SignalFilter<'_>>) -> Result<ObsFile, 
 
         let obs_lines_total = num_entries * obs_lines_per_sat;
 
-        // Check 1: continuation lines were malformed or we collected MORE
-        // satellites than claimed (indicates we misparsed an obs line as a
-        // continuation).  Fewer satellites than claimed is non-conforming but
-        // recoverable — the claimed count still tells us how many obs lines
-        // to consume.
-        let sat_count_ok = sats.len() <= num_entries;
+        // Check 1: a corrupt satellite ID (such as `e03` or `G1x`), a
+        // continuation line that does not look like one, or a satellite list
+        // longer or shorter than the claimed count.
+        let sat_list_ok = list_ok && !cont_malformed && sats.len() == num_entries;
 
         // Check 2: is there an epoch or event header line within the expected
         // observation block?  If so, the epoch structure is broken — skip to
-        // that header.
-        let mut malformed = cont_malformed || !sat_count_ok;
+        // that header.  This also finds where to resume after a bad
+        // satellite list, whose count may be wrong.
+        let mut malformed = !sat_list_ok;
         let mut skip_to: Option<usize> = None;
-        if !malformed {
-            for i in pos..pos + obs_lines_total {
-                if i >= data_lines.len() {
-                    malformed = true;
-                    break;
-                }
-                if is_any_header_line(data_lines[i]) {
-                    skip_to = Some(i);
-                    malformed = true;
-                    break;
-                }
+        for i in pos..pos + obs_lines_total {
+            if i >= data_lines.len() {
+                malformed = true;
+                break;
+            }
+            if is_any_header_line(data_lines[i]) {
+                skip_to = Some(i);
+                malformed = true;
+                break;
             }
         }
 
@@ -562,45 +554,23 @@ fn parse_epoch_header(line: &str, line_no: usize) -> Result<(EpochRecord, u8, us
     Ok((rec, flag, num_entries))
 }
 
-/// Append satellite IDs found in `line[32..68]` to `sats`.
+/// Append the first `want` satellite IDs in `line[32..68]` (12 × A1,I2) to
+/// `sats`.  Epoch lines and continuation lines both put them there.
 ///
-/// Handles both normal epoch lines and continuation lines — both have the
-/// satellite IDs at positions 32–67 (12 × A1,I2).
-fn collect_sats(line: &str, sats: &mut Vec<SatId>) {
+/// Returns `None`, leaving `sats` partly extended, if one of those slots is
+/// not a valid satellite ID (see [`parse_sat_id`]) or a later slot is not
+/// blank, as when the satellite count disagrees with the list.
+fn collect_sats(line: &str, want: usize, sats: &mut Vec<SatId>) -> Option<()> {
     for slot in 0..12 {
         let start = 32 + slot * 3;
-        if start + 3 > 80 {
-            break;
+        let field = [start, start + 1, start + 2].map(|i| byte_at(line, i));
+        if slot < want {
+            sats.push(parse_sat_id(std::str::from_utf8(&field).ok()?)?);
+        } else if field != *b"   " {
+            return None;
         }
-        let sys_byte = byte_at(line, start);
-        let prn_tens = byte_at(line, start + 1);
-        let prn_ones = byte_at(line, start + 2);
-
-        // A blank system or PRN field means no more satellites on this line.
-        // Also break if the system byte is blank but PRN chars aren't both digits
-        // (this avoids misreading observation data as GPS satellite IDs).
-        if sys_byte == b' ' && (!prn_tens.is_ascii_digit() || !prn_ones.is_ascii_digit()) {
-            break;
-        }
-
-        // Blank system byte = GPS (backward compatibility with GPS-only files).
-        let system = if sys_byte == b' ' {
-            SatSystem::GPS
-        } else {
-            SatSystem(sys_byte)
-        };
-
-        let p1 = match prn_tens {
-            b'0'..=b'9' => prn_tens - b'0',
-            _ => 0, // non-digit (e.g. truncated line) → treat as 0
-        };
-        let p0 = match prn_ones {
-            b'0'..=b'9' => prn_ones - b'0',
-            _ => 0,
-        };
-        let prn = p1 * 10 + p0;
-        sats.push(SatId::new(system, prn));
     }
+    Some(())
 }
 
 /// Parse one observation field from `line` at the given slot (0–4).
@@ -793,7 +763,7 @@ mod tests {
         // First 12 sats from the at012000 epoch line (after pos 32).
         let line = " 20  7 18  0  0  0.0000000  0 29G13R10E12E01R03E26G16G11R02G08E31G27";
         let mut sats = Vec::new();
-        collect_sats(line, &mut sats);
+        assert_eq!(collect_sats(line, 12, &mut sats), Some(()));
         assert_eq!(sats.len(), 12);
         assert_eq!(sats[0], SatId::new(SatSystem::GPS, 13));
         assert_eq!(sats[1], SatId::new(SatSystem::GLONASS, 10));
@@ -805,10 +775,84 @@ mod tests {
     fn collect_sats_continuation() {
         let line = "                                G20G30E13E24R16G10E07R09G21R19R18E03";
         let mut sats = Vec::new();
-        collect_sats(line, &mut sats);
+        assert_eq!(collect_sats(line, 12, &mut sats), Some(()));
         assert_eq!(sats.len(), 12);
         assert_eq!(sats[0], SatId::new(SatSystem::GPS, 20));
         assert_eq!(sats[11], SatId::new(SatSystem::GALILEO, 3));
+    }
+
+    #[test]
+    fn collect_sats_rejects_corrupt_and_extra_ids() {
+        let line = |ids: &str| format!(" 24 10  1  0  0  0.0000000  0  2{ids}");
+        let mut sats = Vec::new();
+        // A blank system letter means GPS, and a blank tens digit is zero.
+        assert_eq!(collect_sats(&line("G01  5"), 2, &mut sats), Some(()));
+        let gps = |prn| SatId::new(SatSystem::GPS, prn);
+        assert_eq!(sats, [gps(1), gps(5)]);
+        // Lower-case system, letter or blank in the PRN, PRN 0, too few IDs,
+        // and too many IDs.
+        for bad in ["G01e02", "G01G1x", "G01G  ", "G01G00", "G01", "G01G02G03"] {
+            assert_eq!(
+                collect_sats(&line(bad), 2, &mut Vec::new()),
+                None,
+                "{bad:?}"
+            );
+        }
+    }
+
+    /// A one-satellite-system, one-observation file with epochs at 0, 30 and
+    /// 60 s, the middle one given by `middle`.
+    fn three_epochs(middle: &str) -> String {
+        let h = |content: &str, label: &str| format!("{content:<60}{label}\n");
+        let epoch = |sec: u32, n: usize, ids: &str| {
+            format!(
+                " 24 10  1  0  0{:>11}  0{n:>3}{ids}\n",
+                format!("{sec}.0000000")
+            )
+        };
+        let mut text = h(
+            "     2.11           OBSERVATION DATA    G (GPS)",
+            "RINEX VERSION / TYPE",
+        );
+        text += &h("     1    C1", "# / TYPES OF OBSERV");
+        text += &h("", "END OF HEADER");
+        text += &epoch(0, 2, "G01G02");
+        text += "  20000000.000\n  20000001.000\n";
+        text += &middle.replace("EPOCH", &epoch(30, 0, "")[..29]);
+        text += &epoch(60, 2, "G01G02");
+        text += "  20000060.000\n  20000061.000\n";
+        text
+    }
+
+    #[test]
+    fn epochs_with_bad_satellite_lists_are_dropped() {
+        let obs = "  20000030.000\n  20000031.000\n";
+        let good = three_epochs(&format!("EPOCH  2G01G02\n{obs}"));
+        assert_eq!(parse(good.as_bytes(), None).unwrap().epochs.len(), 3);
+
+        for middle in [
+            "EPOCH  2G01e02\n", // lower-case system letter
+            "EPOCH  2G01G  \n", // blank PRN
+            "EPOCH  2G01G0x\n", // letter in the PRN
+            "EPOCH  2G01G00\n", // PRN 0
+            "EPOCH  3G01G02\n", // count larger than the list
+            "EPOCH  1G01G02\n", // count smaller than the list
+        ] {
+            let text = three_epochs(&format!("{middle}{obs}"));
+            let f = parse(text.as_bytes(), None).unwrap();
+            let secs: Vec<u64> = f.epochs.iter().map(|e| e.seconds_e7).collect();
+            assert_eq!(secs, [0, 600_000_000], "{middle:?}");
+            let c1 = &f.observations[&(
+                SatId::new(SatSystem::GPS, 1),
+                ObsCode::from_v2("C1").unwrap(),
+            )];
+            let got: Vec<(usize, i64)> = c1.iter().map(|&(i, o)| (i, o.value)).collect();
+            assert_eq!(
+                got,
+                [(0, 20_000_000_000), (1, 20_000_060_000)],
+                "{middle:?}"
+            );
+        }
     }
 
     #[test]
