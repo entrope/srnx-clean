@@ -9,7 +9,7 @@ members = [
 edition = "2021"
 rust-version = "1.75"
 license = "Unlicense"
-repository = "https://github.com/mdpoole/srnx-rs"
+repository = "https://github.com/entrope/srnx-rs.git"
 
 [workspace.dependencies]
 srnx = { path = "crates/srnx", version = "0.1.0-rc.1" }

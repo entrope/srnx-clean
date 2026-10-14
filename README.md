@@ -71,3 +71,11 @@ srnx-diff --show-epochs <file.srnx>
 The first mode returns 0 if the files are equivalent, 1 if they differ
 and 2 on bad arguments and corrupted files.
 This allows using `--quiet` for automated testing or CI.
+
+## Using crate `srnx` from Cargo
+
+You can use `srnx` in a Cargo manifest by including something like this:
+
+```text
+srnx = { git = "https://github.com/entrope/srnx-rs", tag = "v0.1.0-rc.2" }
+```
