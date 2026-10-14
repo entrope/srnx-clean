@@ -55,16 +55,10 @@ pub fn norm_indicator(b: u8) -> u8 {
     }
 }
 
-/// Compare two observations on physical value, LLI, and SSI.
-///
-/// Physical equivalence uses `value × scale` as the comparison key so that
-/// different scale factors that represent the same physical quantity compare
-/// equal.
+/// Compare two observations on value, LLI, and SSI.
 #[must_use]
 pub fn obs_eq(a: Obs, b: Obs) -> bool {
-    let phys_a = i128::from(a.value) * i128::from(a.scale);
-    let phys_b = i128::from(b.value) * i128::from(b.scale);
-    phys_a == phys_b
+    a.value == b.value
         && norm_indicator(a.lli) == norm_indicator(b.lli)
         && norm_indicator(a.ssi) == norm_indicator(b.ssi)
 }
@@ -214,13 +208,13 @@ fn compare_series(
             }
             std::cmp::Ordering::Equal => {
                 if !obs_eq(oa, ob) {
-                    let phys_a = i128::from(oa.value) * i128::from(oa.scale);
-                    let phys_b = i128::from(ob.value) * i128::from(ob.scale);
                     out.push(format!(
-                        "{prefix} epoch[{ea}] {}: value mismatch: {}(phys={phys_a})  {}(phys={phys_b})",
+                        "{prefix} epoch[{ea}] {}: value mismatch: {}(value={})  {}(value={})",
                         fmt_epoch(&file_a.epochs[ea]),
                         label_a,
+                        oa.value,
                         label_b,
+                        ob.value,
                     ));
                 }
                 ia += 1;
@@ -285,34 +279,14 @@ mod tests {
     }
 
     #[test]
-    fn obs_eq_same_physical_different_scale() {
-        // value=2, scale=500 ≡ value=1, scale=1000 (both = 1.0 physical).
-        let a = Obs {
-            value: 2,
-            scale: 500,
-            lli: b' ',
-            ssi: b' ',
-        };
-        let b = Obs {
-            value: 1,
-            scale: 1000,
-            lli: b' ',
-            ssi: b' ',
-        };
-        assert!(obs_eq(a, b));
-    }
-
-    #[test]
     fn obs_eq_lli_zero_vs_space() {
         let a = Obs {
             value: 100,
-            scale: 1,
             lli: b'0',
             ssi: b' ',
         };
         let b = Obs {
             value: 100,
-            scale: 1,
             lli: b' ',
             ssi: b' ',
         };

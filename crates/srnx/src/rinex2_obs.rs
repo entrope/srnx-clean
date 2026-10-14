@@ -645,12 +645,7 @@ pub(crate) fn parse_obs_at(line: &str, start: usize) -> Option<Obs> {
     let lli = byte_at(line, start + 14);
     let ssi = byte_at(line, start + 15);
 
-    Some(Obs {
-        value,
-        scale: 1,
-        lli,
-        ssi,
-    })
+    Some(Obs { value, lli, ssi })
 }
 
 // ---------------------------------------------------------------------------
@@ -690,7 +685,6 @@ mod tests {
         let line = " 128250890.432 5  99935750.10842";
         let obs = parse_obs_field(line, 0).unwrap();
         assert_eq!(obs.value, 128_250_890_432);
-        assert_eq!(obs.scale, 1);
         assert_eq!(obs.lli, b' ');
         assert_eq!(obs.ssi, b'5');
 
@@ -896,7 +890,6 @@ mod tests {
         let &(ep_idx, first) = series.first().expect("at least one G13/L1 observation");
         assert_eq!(ep_idx, 0, "G13/L1 observed at epoch 0");
         assert_eq!(first.value, 128_250_890_432);
-        assert_eq!(first.scale, 1);
         assert_eq!(first.lli, b' ');
         assert_eq!(first.ssi, b'5');
     }

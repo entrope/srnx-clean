@@ -30,15 +30,15 @@ impl std::fmt::Display for SatId {
 
 /// One decoded scalar observation.
 ///
-/// Physical value = `value * scale / 1_000`.  For RINEX v2 text files the
-/// scale is always 1000 (millimeter/millicycle resolution).  SRNX files may
-/// use a different scale; comparisons must normalize to the same units.
+/// Every reader returns values in the same units, so observations from
+/// different file formats compare directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Obs {
-    /// Scaled integer: `physical_value × (1000 / scale)`.
+    /// Observation in milli-units of its RINEX unit (e.g. millimeters for
+    /// pseudorange, millicycles for carrier phase): the three decimals of
+    /// the RINEX `F14.3` field.  SRNX values with an explicit scale are
+    /// multiplied out to milli-units.
     pub value: i64,
-    /// Scale factor × 1000.  1000 → physical × 1, 250 → physical × 0.25.
-    pub scale: u32,
     /// Loss-of-lock indicator byte.  `b' '` or `b'0'` = OK / not known.
     pub lli: u8,
     /// Signal-strength indicator byte.  `b' '` or `b'0'` = not known.
@@ -57,7 +57,7 @@ pub struct EpochRecord {
     pub seconds_e7: u64,
     /// Additional picoseconds beyond `seconds_e7` (0–99 999), from the
     /// optional five-digit epoch extension introduced in RINEX 4.02.  Always
-    /// zero for RINEX v2 and SRNX, whose epochs have 10⁻⁷ s resolution.
+    /// zero for RINEX v2 and v3, whose epochs have 10⁻⁷ s resolution.
     pub extra_ps: u32,
     /// Epoch flag: 0 = OK, 1 = power failure, 2–5 = event, 6 = cycle slips.
     pub flag: u8,

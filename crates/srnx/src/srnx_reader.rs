@@ -31,6 +31,8 @@ pub enum SrnxReadError {
     NoEpoc,
     #[error("EPO2 chunk spans 2^63 picoseconds or more")]
     EpochRangeTooLarge,
+    #[error("scaled observation value does not fit in 64 bits")]
+    ValueOverflow,
 }
 
 /// List the satellites in an SRNX file's `SDIR` chunk, each with the
@@ -160,17 +162,12 @@ pub fn read(bytes: &[u8], filter: Option<SignalFilter<'_>>) -> Result<ObsFile, S
                 if val == ABSENT {
                     continue;
                 }
+                let value = val
+                    .checked_mul(i64::from(socd.scale))
+                    .ok_or(SrnxReadError::ValueOverflow)?;
                 let lli = socd.lli.get(i).copied().unwrap_or(b' ');
                 let ssi = socd.ssi.get(i).copied().unwrap_or(b' ');
-                series.push((
-                    ep_idx,
-                    Obs {
-                        value: val,
-                        scale: socd.scale,
-                        lli,
-                        ssi,
-                    },
-                ));
+                series.push((ep_idx, Obs { value, lli, ssi }));
             }
         }
     }
@@ -409,10 +406,10 @@ mod tests {
         let series = obs.observations.get(&(g13, l1)).expect("G13/L1 present");
         let &(ep_idx, first) = series.first().expect("at least one G13/L1 observation");
         assert_eq!(ep_idx, 0);
-        // Comparison unit: value × scale must equal RINEX v2 value × 1 (both scale=1).
-        let phys_srnx = i128::from(first.value) * i128::from(first.scale);
-        let phys_v2 = 128_250_890_432_i128;
-        assert_eq!(phys_srnx, phys_v2, "G13/L1 physical value at epoch 0");
+        assert_eq!(
+            first.value, 128_250_890_432,
+            "G13/L1 milli-cycles at epoch 0"
+        );
     }
 
     #[test]
