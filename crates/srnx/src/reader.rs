@@ -3,7 +3,7 @@
 
 use thiserror::Error;
 
-use crate::model::{Catalog, ObsFile, SignalFilter};
+use crate::model::{Catalog, ObsCode, ObsFile, SatId, SignalFilter};
 use crate::{crinex, rinex2_obs, rinex3_obs, rinex_header, srnx_reader};
 
 pub use crate::crinex::CrinexError;
@@ -65,9 +65,22 @@ impl Format {
         })
     }
 
+    /// Read a file in this format.
+    pub fn read(self, bytes: &[u8]) -> Result<ObsFile, ReadError> {
+        self.read_with(bytes, None)
+    }
+
     /// Read a file in this format, keeping only the satellite/signal pairs
-    /// that `filter` selects (all of them for `None`).
-    pub fn read(
+    /// that `filter` selects; see [`read_filtered`].
+    pub fn read_filtered(
+        self,
+        bytes: &[u8],
+        mut filter: impl FnMut(SatId, ObsCode) -> bool,
+    ) -> Result<ObsFile, ReadError> {
+        self.read_with(bytes, Some(&mut filter))
+    }
+
+    fn read_with(
         self,
         bytes: &[u8],
         filter: Option<SignalFilter<'_>>,
@@ -87,17 +100,38 @@ pub fn catalog(bytes: &[u8]) -> Result<Catalog, ReadError> {
     Format::detect(bytes).catalog(bytes)
 }
 
+/// Read an observation file in any supported format.
+///
+/// ```no_run
+/// let bytes = std::fs::read("abmf1190.26o")?;
+/// let file = srnx::reader::read(&bytes)?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub fn read(bytes: &[u8]) -> Result<ObsFile, ReadError> {
+    Format::detect(bytes).read(bytes)
+}
+
 /// Read an observation file in any supported format, keeping only the
-/// satellite/signal pairs that `filter` selects (all of them for `None`).
+/// satellite/signal pairs for which `filter` returns `true`.
+///
+/// The reader calls `filter` at most once per pair, with every observation
+/// code declared for the satellite's system, before it reads that
+/// satellite's observations.  The RINEX and Compact RINEX readers call it
+/// for the satellites in `PRN / # OF OBS` records right after the header.
+/// Observations that are not selected are skipped rather than decoded, so
+/// a narrow filter makes reading faster.
 ///
 /// ```no_run
 /// use srnx::model::ObsCode;
 ///
 /// let bytes = std::fs::read("abmf1190.26o")?;
 /// let l1c = ObsCode::from_v3("L1C").unwrap();
-/// let file = srnx::reader::read(&bytes, Some(&mut |_sat, code| code == l1c))?;
+/// let file = srnx::reader::read_filtered(&bytes, |_sat, code| code == l1c)?;
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-pub fn read(bytes: &[u8], filter: Option<SignalFilter<'_>>) -> Result<ObsFile, ReadError> {
-    Format::detect(bytes).read(bytes, filter)
+pub fn read_filtered(
+    bytes: &[u8],
+    filter: impl FnMut(SatId, ObsCode) -> bool,
+) -> Result<ObsFile, ReadError> {
+    Format::detect(bytes).read_filtered(bytes, filter)
 }

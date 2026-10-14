@@ -23,15 +23,12 @@ fn try_load(name: &str) -> Option<Vec<u8>> {
 
 /// Read `bytes` with and without `keep` and compare.
 fn check_filtered(name: &str, bytes: &[u8], keep: fn(SatId, ObsCode) -> bool) {
-    let full = reader::read(bytes, None).unwrap_or_else(|e| panic!("{name}: {e}"));
+    let full = reader::read(bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
     let mut calls = BTreeMap::<(SatId, ObsCode), usize>::new();
-    let part = reader::read(
-        bytes,
-        Some(&mut |sat, code| {
-            *calls.entry((sat, code)).or_default() += 1;
-            keep(sat, code)
-        }),
-    )
+    let part = reader::read_filtered(bytes, |sat, code| {
+        *calls.entry((sat, code)).or_default() += 1;
+        keep(sat, code)
+    })
     .unwrap_or_else(|e| panic!("{name}: {e}"));
 
     assert!(
@@ -133,7 +130,7 @@ fn srnx_catalog_matches_observed_columns() {
         };
         let catalog = reader::catalog(&bytes).unwrap();
         assert!(!catalog.codes_by_system.is_empty(), "{name}");
-        let file = reader::read(&bytes, None).unwrap();
+        let file = reader::read(&bytes).unwrap();
         assert_eq!(catalog_pairs(&catalog), observed_pairs(&file), "{name}");
     }
 }
@@ -158,7 +155,7 @@ fn rinex_catalogs_agree_across_formats() {
         let sats = catalog.satellites.as_ref().unwrap();
         assert!(sats.iter().all(|(_, c)| c == codes));
         let pairs = catalog_pairs(&catalog);
-        let file = reader::read(&rnx, None).unwrap();
+        let file = reader::read(&rnx).unwrap();
         assert!(observed_pairs(&file).is_subset(&pairs));
         let srnx_catalog = reader::catalog(&srnx).unwrap();
         assert!(catalog_pairs(&srnx_catalog).is_subset(&pairs));

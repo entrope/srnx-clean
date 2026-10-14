@@ -23,8 +23,8 @@ For more details, see [SRNX](https://github.com/entrope/srnx/).
 
 ## crate `srnx`
 
-This crate implements the reader library, with the primary entry point
-being `srnx::reader::read()`.
+This crate implements the reader library, with the primary entry points
+being `srnx::reader::read()` and `srnx::reader::read_filtered()`.
 This returns an `srnx::model::ObsFile`, which contains:
 
 - the file header, normalized to linefeed endings, with lookup by label;
@@ -45,7 +45,7 @@ use srnx::model::ObsCode;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bytes = std::fs::read("abmf1190.26o")?;
     let l1c = ObsCode::from_v3("L1C").unwrap();
-    let file = srnx::reader::read(&bytes, Some(&mut |_sat, code| code == l1c))?;
+    let file = srnx::reader::read_filtered(&bytes, |_sat, code| code == l1c)?;
     Ok(())
 }
 ```

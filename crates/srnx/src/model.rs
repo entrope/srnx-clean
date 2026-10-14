@@ -147,13 +147,10 @@ impl Catalog {
 }
 
 /// A caller's choice of satellite/signal pairs to read: `true` keeps the
-/// pair's observations.  Readers take an `Option<SignalFilter>`, where
-/// `None` keeps everything.
-///
-/// A reader calls the filter at most once per pair, with every observation
-/// code declared for the satellite's system, before it reads that
-/// satellite's observations.  The RINEX and Compact RINEX readers call it
-/// for the satellites in `PRN / # OF OBS` records right after the header.
+/// pair's observations.  The per-format readers take an
+/// `Option<SignalFilter>`, where `None` keeps everything; the call
+/// contract is documented on [`crate::reader::read_filtered`].
+#[doc(hidden)]
 pub type SignalFilter<'a> = &'a mut dyn FnMut(SatId, ObsCode) -> bool;
 
 /// A [`SignalFilter`] memoized as one mask per satellite over the

@@ -85,7 +85,7 @@ fn load_obs_file(path: &str) -> Result<ObsFile, Box<dyn std::error::Error>> {
     } else {
         Format::detect(&bytes)
     };
-    Ok(format.read(&bytes, None)?)
+    Ok(format.read(&bytes)?)
 }
 
 // ---------------------------------------------------------------------------
