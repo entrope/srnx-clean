@@ -353,30 +353,13 @@ impl<'a> SrnxFile<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Path resolver for fixtures in `rnx-data/`.
-    fn fixture(name: &str) -> std::path::PathBuf {
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("rnx-data")
-            .join(name)
-    }
-
-    fn try_load(name: &str) -> Option<Vec<u8>> {
-        match std::fs::read(fixture(name)) {
-            Ok(b) => Some(b),
-            Err(e) => {
-                eprintln!("skipping fixture test: {name} unavailable: {e}");
-                None
-            }
-        }
-    }
+    use crate::digest::DigestId;
 
     /// Expected per-FOURCC body-chunk counts from `srnx_scan` reference output.
     struct Expected {
         rhdr: usize,
         epoc: usize,
+        epo2: usize,
         sdir: usize,
         evtf: usize,
         sate: usize,
@@ -389,6 +372,7 @@ mod tests {
         let g = |tag: &[u8; 4]| counts.get(tag).copied().unwrap_or(0);
         assert_eq!(g(b"RHDR"), want.rhdr, "{name}: RHDR count");
         assert_eq!(g(b"EPOC"), want.epoc, "{name}: EPOC count");
+        assert_eq!(g(b"EPO2"), want.epo2, "{name}: EPO2 count");
         assert_eq!(g(b"SDIR"), want.sdir, "{name}: SDIR count");
         assert_eq!(g(b"EVTF"), want.evtf, "{name}: EVTF count");
         assert_eq!(g(b"SATE"), want.sate, "{name}: SATE count");
@@ -397,7 +381,7 @@ mod tests {
     }
 
     fn check_full(name: &str, want: &Expected) {
-        let Some(bytes) = try_load(name) else { return };
+        let bytes = crate::test_data(name);
         let file = SrnxFile::parse(&bytes).expect("parse should succeed");
         assert!(file.srnx_digest_ok, "{name}: SRNX-chunk digest mismatch");
         assert!(file.file_digest_ok, "{name}: file-level digest mismatch");
@@ -422,11 +406,12 @@ mod tests {
             "{name}: SDIR satellite count should match SATE chunk count"
         );
 
-        // EPOC offset from SDIR must point at an actual EPOC chunk.
+        // The epoch offset from SDIR must point at the EPOC or EPO2 chunk.
         let epoc_chunk = file
             .chunk_at_offset(sdir.epoc_offset)
             .expect("SDIR.epoc_offset should resolve");
-        assert_eq!(&epoc_chunk.fourcc, b"EPOC");
+        let want_fourcc = if want.epo2 == 1 { b"EPO2" } else { b"EPOC" };
+        assert_eq!(&epoc_chunk.fourcc, want_fourcc);
 
         // Every SATE offset in SDIR must resolve to a SATE chunk.
         for entry in &sdir.satellites {
@@ -444,57 +429,86 @@ mod tests {
     }
 
     #[test]
-    fn at012000_srnx() {
+    fn soc2_fixture() {
         check_full(
-            "at012000.srnx",
+            "at01_v211_1hz.srnx",
             &Expected {
                 rhdr: 1,
                 epoc: 1,
+                epo2: 0,
                 sdir: 1,
                 evtf: 0,
-                sate: 73,
+                sate: 29,
                 socd: 0,
-                soc2: 705,
+                soc2: 284,
             },
         );
     }
 
     #[test]
-    fn abmf_srnx() {
-        // RINEX v3 fixture; chunk counts taken from `srnx_scan abmf.srnx`.
-        let Some(bytes) = try_load("abmf.srnx") else {
-            return;
-        };
-        let file = SrnxFile::parse(&bytes).expect("parse should succeed");
-        assert!(file.srnx_digest_ok);
-        assert!(file.file_digest_ok);
-        // Sanity: parses, has RHDR, has SDIR.
-        assert!(file.rhdr_payload().is_some());
-        assert!(file.sdir().unwrap().is_some());
+    fn socd_fixture_with_event() {
+        check_full(
+            "mty2_v211_15s.socd.srnx",
+            &Expected {
+                rhdr: 1,
+                epoc: 1,
+                epo2: 0,
+                sdir: 1,
+                evtf: 1,
+                sate: 21,
+                socd: 246,
+                soc2: 0,
+            },
+        );
     }
 
     #[test]
-    fn okcb1200_srnx() {
-        let Some(bytes) = try_load("okcb1200.srnx") else {
-            return;
+    fn digest_variant_fixtures() {
+        let want = Expected {
+            rhdr: 1,
+            epoc: 1,
+            epo2: 0,
+            sdir: 1,
+            evtf: 0,
+            sate: 22,
+            socd: 0,
+            soc2: 168,
         };
-        let file = SrnxFile::parse(&bytes).expect("parse should succeed");
-        assert!(file.srnx_digest_ok);
-        assert!(file.file_digest_ok);
-        assert!(file.rhdr_payload().is_some());
-        assert!(file.sdir().unwrap().is_some());
+        for (name, chunk_digest, file_digest) in [
+            ("n302_v211_30s.srnx", DigestId::Crc32c, DigestId::Blake3_32),
+            ("n302_v211_30s.null.srnx", DigestId::Null, DigestId::Null),
+            (
+                "n302_v211_30s.blake3.srnx",
+                DigestId::Blake3_32,
+                DigestId::Blake3_16,
+            ),
+        ] {
+            check_full(name, &want);
+            let bytes = crate::test_data(name);
+            let header = SrnxFile::parse(&bytes).unwrap().header;
+            assert_eq!(
+                (header.chunk_digest, header.file_digest),
+                (chunk_digest, file_digest),
+                "{name}"
+            );
+        }
     }
 
     #[test]
-    fn sbst1200_srnx() {
-        let Some(bytes) = try_load("sbst1200.srnx") else {
-            return;
-        };
-        let file = SrnxFile::parse(&bytes).expect("parse should succeed");
-        assert!(file.srnx_digest_ok);
-        assert!(file.file_digest_ok);
-        assert!(file.rhdr_payload().is_some());
-        assert!(file.sdir().unwrap().is_some());
+    fn epo2_fixture() {
+        check_full(
+            "balm_v402_1hz_ps.srnx",
+            &Expected {
+                rhdr: 1,
+                epoc: 0,
+                epo2: 1,
+                sdir: 1,
+                evtf: 0,
+                sate: 47,
+                socd: 0,
+                soc2: 282,
+            },
+        );
     }
 
     #[test]
@@ -507,9 +521,7 @@ mod tests {
 
     #[test]
     fn detects_tampered_file_digest() {
-        let Some(mut bytes) = try_load("at012000.srnx") else {
-            return;
-        };
+        let mut bytes = crate::test_data("at01_v211_1hz.srnx");
         // Flip a bit in the last byte (file-level digest).
         let last = bytes.len() - 1;
         bytes[last] ^= 0x01;

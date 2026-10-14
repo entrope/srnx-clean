@@ -3,23 +3,15 @@
 //! A filtered read must equal the unfiltered read restricted to the
 //! selected pairs.  The SRNX fixtures use SOC2 value and rate predictors and
 //! SSI references, so filters that drop the reference columns exercise the
-//! lazy decoding of unselected references.  Tests are skipped when a
-//! fixture is unavailable.
+//! lazy decoding of unselected references.
+
+mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use srnx::model::{Catalog, HeaderText, ObsCode, ObsFile, SatId, SatSystem, Version};
 use srnx::reader::{self, Format};
-
-fn try_load(name: &str) -> Option<Vec<u8>> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("rnx-data")
-        .join(name);
-    std::fs::read(path).ok()
-}
 
 /// Read `bytes` with and without `keep` and compare.
 fn check_filtered(name: &str, bytes: &[u8], keep: fn(SatId, ObsCode) -> bool) {
@@ -74,38 +66,33 @@ fn gps_phase(sat: SatId, code: ObsCode) -> bool {
     sat.system == SatSystem::GPS && code.as_str().starts_with('L')
 }
 
-fn check_all_filters(name: &str) {
-    let Some(bytes) = try_load(name) else {
-        return;
-    };
-    check_filtered(name, &bytes, no_phase_odd_prn);
-    check_filtered(name, &bytes, gps_phase);
+fn check_all_filters(name: &str, bytes: &[u8]) {
+    check_filtered(name, bytes, no_phase_odd_prn);
+    check_filtered(name, bytes, gps_phase);
 }
 
 #[test]
-fn filtered_srnx_abmf() {
-    check_all_filters("abmf.srnx");
+fn filtered_srnx() {
+    for name in [
+        "balm_v304_1hz.srnx",
+        "n302_v211_30s.srnx",
+        "n302_v211_30s.socd.srnx",
+        "mty2_v211_15s.srnx",
+    ] {
+        check_all_filters(name, &common::data(name));
+    }
 }
 
 #[test]
-fn filtered_srnx_ctbk1830() {
-    check_all_filters("ctbk1830.srnx");
+fn filtered_rinex2_and_crinex1() {
+    check_all_filters("n302_v211_30s.rnx", &common::data("n302_v211_30s.rnx"));
+    check_all_filters("n302_v211_30s.crx", &common::data("n302_v211_30s.crx"));
 }
 
 #[test]
-fn filtered_rinex2_ctbk1830() {
-    check_all_filters("ctbk1830.22o");
-}
-
-#[test]
-fn filtered_crinex1_ctbk1830() {
-    check_all_filters("ctbk1830.22d");
-}
-
-#[test]
-fn filtered_rinex3_and_crinex3_abmf() {
-    check_all_filters("abmf.rnx");
-    check_all_filters("abmf.crx");
+fn filtered_rinex3_and_crinex3() {
+    check_all_filters("balm_v304_1hz RINEX", &common::rinex_text("balm_v304_1hz"));
+    check_all_filters("balm_v304_1hz.crx", &common::data("balm_v304_1hz.crx"));
 }
 
 fn observed_pairs(file: &ObsFile) -> BTreeSet<(SatId, ObsCode)> {
@@ -124,10 +111,8 @@ fn catalog_pairs(catalog: &Catalog) -> BTreeSet<(SatId, ObsCode)> {
 
 #[test]
 fn srnx_catalog_matches_observed_columns() {
-    for name in ["abmf.srnx", "ctbk1830.srnx"] {
-        let Some(bytes) = try_load(name) else {
-            continue;
-        };
+    for name in ["balm_v304_1hz.srnx", "n302_v211_30s.srnx"] {
+        let bytes = common::data(name);
         let catalog = reader::catalog(&bytes).unwrap();
         assert!(!catalog.codes_by_system.is_empty(), "{name}");
         let file = reader::read(&bytes).unwrap();
@@ -137,13 +122,12 @@ fn srnx_catalog_matches_observed_columns() {
 
 #[test]
 fn rinex_catalogs_agree_across_formats() {
-    // ctbk1830.22o has PRN / # OF OBS records; every satellite may carry
+    // n302_v211_30s has PRN / # OF OBS records; every satellite may carry
     // every v2 observation code.
-    if let (Some(rnx), Some(crx), Some(srnx)) = (
-        try_load("ctbk1830.22o"),
-        try_load("ctbk1830.22d"),
-        try_load("ctbk1830.srnx"),
-    ) {
+    {
+        let rnx = common::data("n302_v211_30s.rnx");
+        let crx = common::data("n302_v211_30s.crx");
+        let srnx = common::data("n302_v211_30s.srnx");
         assert_eq!(Format::detect(&rnx), Some(Format::Rinex2));
         assert_eq!(Format::detect(&crx), Some(Format::Crinex));
         let catalog = reader::catalog(&rnx).unwrap();
@@ -161,12 +145,11 @@ fn rinex_catalogs_agree_across_formats() {
         assert!(catalog_pairs(&srnx_catalog).is_subset(&pairs));
     }
 
-    // abmf.rnx has no PRN / # OF OBS records.
-    if let (Some(rnx), Some(crx), Some(srnx)) = (
-        try_load("abmf.rnx"),
-        try_load("abmf.crx"),
-        try_load("abmf.srnx"),
-    ) {
+    // balm_v304_1hz has no PRN / # OF OBS records.
+    {
+        let rnx = common::rinex_text("balm_v304_1hz");
+        let crx = common::data("balm_v304_1hz.crx");
+        let srnx = common::data("balm_v304_1hz.srnx");
         assert_eq!(Format::detect(&rnx), Some(Format::Rinex3));
         let catalog = reader::catalog(&rnx).unwrap();
         assert_eq!(catalog.satellites, None);
@@ -195,11 +178,13 @@ fn version_is_the_rinex_version_in_every_format() {
         }
     }
 
-    for (name, major, minor) in [("ctbk1830.srnx", 2, 11), ("abmf.srnx", 3, 4)] {
-        if let Some(bytes) = try_load(name) {
-            let file = reader::read(&bytes).unwrap();
-            assert_eq!(file.version(), Some(Version { major, minor }), "{name}");
-        }
+    for (name, major, minor) in [
+        ("n302_v211_30s.srnx", 2, 11),
+        ("balm_v304_1hz.srnx", 3, 4),
+        ("balm_v402_1hz_ps.srnx", 4, 2),
+    ] {
+        let file = reader::read(&common::data(name)).unwrap();
+        assert_eq!(file.version(), Some(Version { major, minor }), "{name}");
     }
 
     let unversioned = ObsFile {

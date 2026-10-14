@@ -1117,23 +1117,16 @@ mod tests {
         assert_eq!(h.leap_seconds, Some(18));
     }
 
-    fn try_load_rhdr(name: &str) -> Option<Vec<u8>> {
-        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("rnx-data")
-            .join(name);
-        let bytes = std::fs::read(path).ok()?;
-        let file = crate::file::SrnxFile::parse(&bytes).ok()?;
-        file.rhdr_payload().map(<[u8]>::to_vec)
+    /// The `RHDR` payload of an SRNX fixture.
+    fn fixture_rhdr(name: &str) -> Vec<u8> {
+        let bytes = crate::test_data(name);
+        let file = crate::file::SrnxFile::parse(&bytes).unwrap();
+        file.rhdr_payload().unwrap().to_vec()
     }
 
     #[test]
-    fn fixture_at012000_v2() {
-        let Some(rhdr) = try_load_rhdr("at012000.srnx") else {
-            return;
-        };
-        let h = parse(&rhdr).unwrap();
+    fn fixture_at01_v2() {
+        let h = parse(&fixture_rhdr("at01_v211_1hz.srnx")).unwrap();
         assert_eq!(
             h.version,
             Version {
@@ -1162,51 +1155,22 @@ mod tests {
     }
 
     #[test]
-    fn fixture_abmf_v3() {
-        let Some(rhdr) = try_load_rhdr("abmf.srnx") else {
-            return;
-        };
-        let h = parse(&rhdr).unwrap();
+    fn fixture_balm_v3() {
+        let h = parse(&fixture_rhdr("balm_v304_1hz.srnx")).unwrap();
         assert_eq!(h.version, Version { major: 3, minor: 4 });
         assert_eq!(h.sat_system, SatSystem::MIXED);
-        // From the file: G(18), E(20), S(8), R(20), C(12), J(12), I(4) — 7 systems.
         let systems: Vec<u8> = h.obs_codes.by_system.iter().map(|(s, _)| s.0).collect();
-        assert_eq!(systems, vec![b'G', b'E', b'S', b'R', b'C', b'J', b'I']);
-        assert_eq!(h.obs_codes.for_system(SatSystem::GPS).unwrap().len(), 18);
-        assert_eq!(
-            h.obs_codes.for_system(SatSystem::GALILEO).unwrap().len(),
-            20
-        );
-        assert_eq!(h.obs_codes.for_system(SatSystem::SBAS).unwrap().len(), 8);
-        assert_eq!(
-            h.obs_codes.for_system(SatSystem::GLONASS).unwrap().len(),
-            20
-        );
-        assert_eq!(h.obs_codes.for_system(SatSystem::BEIDOU).unwrap().len(), 12);
-        assert_eq!(h.obs_codes.for_system(SatSystem::QZSS).unwrap().len(), 12);
-        assert_eq!(h.obs_codes.for_system(SatSystem::IRNSS).unwrap().len(), 4);
-        assert_eq!(h.marker_name.as_deref(), Some("ABMF"));
-    }
-
-    #[test]
-    fn fixture_okcb1200_v2() {
-        let Some(rhdr) = try_load_rhdr("okcb1200.srnx") else {
-            return;
-        };
-        let h = parse(&rhdr).unwrap();
-        assert_eq!(h.version.major, 2);
-        // Just confirm we parse cleanly and have at least one obs code list.
-        assert_ne!(h.obs_codes.by_system, []);
-    }
-
-    #[test]
-    fn fixture_sbst1200_v2() {
-        let Some(rhdr) = try_load_rhdr("sbst1200.srnx") else {
-            return;
-        };
-        let h = parse(&rhdr).unwrap();
-        assert_eq!(h.version.major, 2);
-        assert_ne!(h.obs_codes.by_system, []);
+        assert_eq!(systems, b"GREJCI");
+        let count = |sys| h.obs_codes.for_system(sys).unwrap().len();
+        assert_eq!(count(SatSystem::GPS), 24);
+        assert_eq!(count(SatSystem::GLONASS), 20);
+        assert_eq!(count(SatSystem::GALILEO), 20);
+        assert_eq!(count(SatSystem::QZSS), 24);
+        assert_eq!(count(SatSystem::BEIDOU), 20);
+        assert_eq!(count(SatSystem::IRNSS), 8);
+        assert_eq!(h.marker_name.as_deref(), Some("BALM"));
+        assert_eq!(h.interval, Some(1.0));
+        assert_eq!(h.leap_seconds, Some(18));
     }
 
     // ── HeaderText tests ─────────────────────────────────────────────────
@@ -1314,10 +1278,7 @@ mod tests {
 
     #[test]
     fn header_text_fixture_at01() {
-        let Some(rhdr) = try_load_rhdr("at012000.srnx") else {
-            return;
-        };
-        let h = HeaderText::from_bytes(&rhdr);
+        let h = HeaderText::from_bytes(&fixture_rhdr("at01_v211_1hz.srnx"));
         assert_eq!(h.get_line("MARKER NAME"), Some("AT01".to_string()));
         // Multiple COMMENT lines.
         let comments: Vec<String> = h.get_lines("COMMENT").collect();

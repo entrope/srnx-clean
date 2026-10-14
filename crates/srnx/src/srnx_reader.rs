@@ -305,17 +305,8 @@ fn obs_codes_for_sat(header: &Header, system: SatSystem) -> &[ObsCode] {
 mod tests {
     use super::*;
 
-    fn fixture(name: &str) -> std::path::PathBuf {
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("rnx-data")
-            .join(name)
-    }
-
-    fn try_read_srnx(name: &str) -> Option<ObsFile> {
-        let bytes = std::fs::read(fixture(name)).ok()?;
-        read(&bytes, None).ok()
+    fn fixture(name: &str) -> ObsFile {
+        read(&crate::test_data(name), None).unwrap()
     }
 
     #[test]
@@ -376,18 +367,14 @@ mod tests {
     }
 
     #[test]
-    fn fixture_at012000_epoch_count() {
-        let Some(obs) = try_read_srnx("at012000.srnx") else {
-            return;
-        };
-        assert_eq!(obs.epochs.len(), 86_400);
+    fn fixture_at01_epoch_count() {
+        let obs = fixture("at01_v211_1hz.srnx");
+        assert_eq!(obs.epochs.len(), 120);
     }
 
     #[test]
-    fn fixture_at012000_first_epoch() {
-        let Some(obs) = try_read_srnx("at012000.srnx") else {
-            return;
-        };
+    fn fixture_at01_first_epoch() {
+        let obs = fixture("at01_v211_1hz.srnx");
         let e = &obs.epochs[0];
         assert_eq!(e.year, 2020);
         assert_eq!(e.month, 7);
@@ -398,10 +385,8 @@ mod tests {
     }
 
     #[test]
-    fn fixture_at012000_g13_l1_first_epoch() {
-        let Some(obs) = try_read_srnx("at012000.srnx") else {
-            return;
-        };
+    fn fixture_at01_g13_l1_first_epoch() {
+        let obs = fixture("at01_v211_1hz.srnx");
         let l1 = ObsCode::from_v2("L1").unwrap();
         let g13 = SatId::new(SatSystem::GPS, 13);
         let series = obs.observations.get(&(g13, l1)).expect("G13/L1 present");
@@ -415,10 +400,7 @@ mod tests {
 
     #[test]
     fn rejects_tampered_file_digest() {
-        let Some(bytes) = std::fs::read(fixture("at012000.srnx")).ok() else {
-            return;
-        };
-        let mut tampered = bytes;
+        let mut tampered = crate::test_data("at01_v211_1hz.srnx");
         let last = tampered.len() - 1;
         tampered[last] ^= 0x01; // flip a bit in the file-level digest
         match read(&tampered, None) {
@@ -429,10 +411,8 @@ mod tests {
     }
 
     #[test]
-    fn fixture_at012000_observations_sorted() {
-        let Some(obs) = try_read_srnx("at012000.srnx") else {
-            return;
-        };
+    fn fixture_at01_observations_sorted() {
+        let obs = fixture("at01_v211_1hz.srnx");
         let num_epochs = obs.epochs.len();
         for (key, series) in &obs.observations {
             assert!(

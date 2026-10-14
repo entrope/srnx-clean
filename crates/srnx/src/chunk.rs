@@ -278,12 +278,8 @@ mod tests {
     /// remainder and confirm chunk-type counts against the `srnx_scan`
     /// reference output.
     #[test]
-    fn iter_real_at012000_srnx() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../rnx-data/at012000.srnx");
-        let Ok(bytes) = std::fs::read(path) else {
-            eprintln!("skipping fixture test: {path} unavailable");
-            return;
-        };
+    fn iter_real_srnx_fixture() {
+        let bytes = crate::test_data("at01_v211_1hz.srnx");
 
         // Bootstrap: read the SRNX chunk's framing, then parse its payload
         // by hand to learn the per-chunk and file-level digest IDs.
@@ -322,9 +318,9 @@ mod tests {
         assert_eq!(counts.get(b"RHDR").copied(), Some(1));
         assert_eq!(counts.get(b"EPOC").copied(), Some(1));
         assert_eq!(counts.get(b"SDIR").copied(), Some(1));
-        assert_eq!(counts.get(b"SATE").copied(), Some(73));
+        assert_eq!(counts.get(b"SATE").copied(), Some(29));
         // Revision 1.1 fixture: observation data is in SOC2, not SOCD.
-        assert_eq!(counts.get(b"SOC2").copied(), Some(705));
+        assert_eq!(counts.get(b"SOC2").copied(), Some(284));
         assert!(!counts.contains_key(b"SOCD"));
         // No event chunks in this fixture.
         assert!(!counts.contains_key(b"EVTF"));

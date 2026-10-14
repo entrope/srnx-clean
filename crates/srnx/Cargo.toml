@@ -6,6 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Clean-room reader for the Succinct RINEX (SRNX) and RINEX observation file formats"
+# The tests need tests/data, which includes third-party data under its own
+# terms (see tests/data/README.md), so the published crate leaves them out.
+exclude = ["tests/"]
 
 [dependencies]
 blake3.workspace = true

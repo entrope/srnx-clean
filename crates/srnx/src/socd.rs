@@ -685,144 +685,47 @@ mod tests {
 
     // ── Fixture integration tests ─────────────────────────────────────────
 
-    fn try_load_socd_chunk(srnx_name: &str, socd_index: usize) -> Option<Vec<u8>> {
-        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("rnx-data")
-            .join(srnx_name);
-        let bytes = std::fs::read(path).ok()?;
-        let file = crate::file::SrnxFile::parse(&bytes).ok()?;
-        let socd_chunks: Vec<_> = file
-            .chunks
+    /// The payloads of every `SOCD` chunk in an SRNX fixture, in file order.
+    fn fixture_socd_chunks(srnx_name: &str) -> Vec<Vec<u8>> {
+        let bytes = crate::test_data(srnx_name);
+        let file = crate::file::SrnxFile::parse(&bytes).unwrap();
+        file.chunks
             .iter()
             .filter(|c| c.fourcc == *b"SOCD")
-            .collect();
-        let chunk = socd_chunks.get(socd_index)?;
-        Some(chunk.payload.to_vec())
+            .map(|c| c.payload.to_vec())
+            .collect()
     }
 
     #[test]
-    fn fixture_at012000_socd_count_matches() {
-        // The first SOCD in at012000 is E01/L1 with 27047 present observations.
-        let Some(payload) = try_load_socd_chunk("at012000.srnx", 0) else {
-            return;
-        };
-        let socd = parse(&payload).expect("SOCD parse must succeed");
+    fn fixture_at01_first_socd() {
+        // The first SOCD in the file is E01/L1, observed in all 120 epochs.
+        let chunks = fixture_socd_chunks("at01_v211_1hz.socd.srnx");
+        let socd = parse(&chunks[0]).expect("SOCD parse must succeed");
         assert_eq!(socd.obs_name[..3], *b"E01");
-        assert_eq!(socd.values.len(), 27047);
-        assert_eq!(socd.lli.len(), 27047);
-        assert_eq!(socd.ssi.len(), 27047);
-    }
-
-    #[test]
-    fn fixture_at012000_socd_values_reasonable() {
-        // E01/L1 carrier phase. Stored as integer millicycles × scale.
-        // Default scale=1000: value is in millicycles. Galileo L1 ≈ 1.5 GHz,
-        // wavelength ≈ 0.19 m ≈ 19 cm. Phase range ~1e8 cycles.
-        let Some(payload) = try_load_socd_chunk("at012000.srnx", 0) else {
-            return;
-        };
-        let socd = parse(&payload).expect("parse must succeed");
+        assert_eq!(socd.values.len(), 120);
+        assert_eq!(socd.lli.len(), 120);
+        assert_eq!(socd.ssi.len(), 120);
+        // L1 carrier phase in millicycles, with the default scale.
         assert_eq!(socd.scale, 1);
-        let present: Vec<_> = socd
+        assert!(socd
             .values
             .iter()
-            .filter(|&&v| v != ABSENT)
-            .copied()
-            .collect();
-        // L1 carrier phase values are physical × 1000 (millicycles); should be large (>1e11).
-        let max_abs = present.iter().map(|v| v.unsigned_abs()).max().unwrap_or(0);
-        assert!(
-            max_abs > 1_000_000,
-            "L1 phase values seem too small: max={max_abs}"
-        );
+            .all(|&v| v != ABSENT && v.unsigned_abs() > 1_000_000));
     }
 
     #[test]
-    fn fixture_at012000_no_value_overflows_sentinel() {
-        // Total value count must be 27047; a small fraction may be ABSENT due
-        // to data gaps within the satellite's visibility window.
-        let Some(payload) = try_load_socd_chunk("at012000.srnx", 0) else {
-            return;
-        };
-        let socd = parse(&payload).unwrap();
-        assert_eq!(socd.values.len(), 27047);
-        // No "valid" slot should accidentally equal the absent sentinel when the
-        // encoding doesn't intend it — just confirm there's no runaway absents.
-        let absent_count = socd.values.iter().filter(|&&v| v == ABSENT).count();
-        assert!(
-            absent_count < 1000,
-            "unexpectedly many absent slots: {absent_count}"
-        );
-    }
-
-    /// Encode `rnx-data/<source>` with `rnx2srnx --socd` so the SOCD decoder
-    /// is exercised; the nominal `.srnx` fixtures use revision 1.1 SOC2.
-    /// Returns `None` (skipping the test) if the source or encoder is absent.
-    fn socd_fixture(source: &str) -> Option<Vec<u8>> {
-        let input = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("rnx-data")
-            .join(source);
-        if !input.exists() {
-            eprintln!("skipping SOCD fixture test: {source} unavailable");
-            return None;
+    fn fixture_all_socd_chunks_parse() {
+        for (name, want_chunks) in [
+            ("at01_v211_1hz.socd.srnx", 284),
+            ("balm_v304_1hz.socd.srnx", 282),
+            ("mty2_v211_15s.socd.srnx", 246),
+            ("n302_v211_30s.socd.srnx", 168),
+        ] {
+            let chunks = fixture_socd_chunks(name);
+            assert_eq!(chunks.len(), want_chunks, "{name}");
+            for (i, payload) in chunks.iter().enumerate() {
+                parse(payload).unwrap_or_else(|e| panic!("{name}: SOCD {i} failed: {e}"));
+            }
         }
-        let output = std::env::temp_dir().join(format!(
-            "srnx-socd-test-{}-{source}.srnx",
-            std::process::id()
-        ));
-        let Ok(status) = std::process::Command::new("rnx2srnx")
-            .arg("--socd")
-            .arg(&input)
-            .arg(&output)
-            .status()
-        else {
-            eprintln!("skipping SOCD fixture test: rnx2srnx unavailable");
-            return None;
-        };
-        assert!(status.success(), "rnx2srnx --socd {source}: {status}");
-        let bytes = std::fs::read(&output).expect("read SOCD fixture");
-        let _ = std::fs::remove_file(&output);
-        Some(bytes)
-    }
-
-    #[test]
-    fn fixture_at012000_all_socd_chunks_parse() {
-        let Some(bytes) = socd_fixture("at012000.20o") else {
-            return;
-        };
-        let file = crate::file::SrnxFile::parse(&bytes).expect("file parse");
-        let mut chunks = 0_usize;
-        let mut total_values: usize = 0;
-        for chunk in file.chunks.iter().filter(|c| c.fourcc == *b"SOCD") {
-            let socd = parse(chunk.payload)
-                .unwrap_or_else(|e| panic!("SOCD at offset {} failed: {e}", chunk.file_offset));
-            chunks += 1;
-            total_values += socd.values.len();
-        }
-        assert_eq!(chunks, 705);
-        // Sanity: total decoded values across all 705 SOCDs.
-        assert!(
-            total_values > 1_000_000,
-            "expected >1M values, got {total_values}"
-        );
-    }
-
-    #[test]
-    fn fixture_abmf_all_socd_parse() {
-        let Some(bytes) = socd_fixture("abmf.rnx") else {
-            return;
-        };
-        let file = crate::file::SrnxFile::parse(&bytes).expect("file parse");
-        let mut chunks = 0_usize;
-        for chunk in file.chunks.iter().filter(|c| c.fourcc == *b"SOCD") {
-            parse(chunk.payload)
-                .unwrap_or_else(|e| panic!("SOCD at {} failed: {e}", chunk.file_offset));
-            chunks += 1;
-        }
-        assert!(chunks > 0, "abmf --socd produced no SOCD chunks");
     }
 }

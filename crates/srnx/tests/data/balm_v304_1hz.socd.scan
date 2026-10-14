@@ -1,0 +1,86 @@
+SRNX: version 1.0, chunk digest=2, file digest=5, SDIR offset=58015
+RHDR: 2637 bytes
+  Epochs: 120, Span: interval=1.0000000 s, count=120, 2026-10-08 00:00:00.0000000
+SDIR: 58015 offset, 47 satellites
+
+=== Aggregate Summary (1 files) ===
+
+Chunk totals:
+  EPOC: 1
+  SDIR: 1
+  EVTF: 0
+  SATE: 47
+  SOCD: 282
+  SOC2: 0
+
+Total epochs: 120
+
+Scale factors (observation unit multiples):
+  1: 282 SOCDs
+
+Delta orders:
+  order 1: 113 SOCDs
+  order 2: 111 SOCDs
+  order 3: 58 SOCDs
+
+Block headers:
+  0x05 (8×6-bit matrix): 12
+  0x06 (8×7-bit matrix): 53
+  0x07 (8×8-bit matrix): 79
+  0x08 (8×9-bit matrix): 156
+  0x09 (8×10-bit matrix): 121
+  0x0A (8×11-bit matrix): 175
+  0x0B (8×12-bit matrix): 40
+  0x0C (8×13-bit matrix): 8
+  0x0D (8×14-bit matrix): 1
+  0x0F (8×16-bit matrix): 6
+  0x10 (8×17-bit matrix): 10
+  0x26 (16×7-bit matrix): 20
+  0x27 (16×8-bit matrix): 50
+  0x28 (16×9-bit matrix): 57
+  0x29 (16×10-bit matrix): 104
+  0x2A (16×11-bit matrix): 38
+  0x2B (16×12-bit matrix): 14
+  0x2C (16×13-bit matrix): 1
+  0x46 (24×7-bit matrix): 12
+  0x47 (24×8-bit matrix): 41
+  0x48 (24×9-bit matrix): 13
+  0x49 (24×10-bit matrix): 55
+  0x4A (24×11-bit matrix): 40
+  0x4B (24×12-bit matrix): 7
+  0x4C (24×13-bit matrix): 1
+  0x66 (32×7-bit matrix): 5
+  0x67 (32×8-bit matrix): 15
+  0x68 (32×9-bit matrix): 12
+  0x69 (32×10-bit matrix): 46
+  0x6A (32×11-bit matrix): 41
+  0x6B (32×12-bit matrix): 3
+  0x87 (40×8-bit matrix): 21
+  0x88 (40×9-bit matrix): 9
+  0x89 (40×10-bit matrix): 31
+  0x8A (40×11-bit matrix): 25
+  0x8B (40×12-bit matrix): 3
+  0xA6 (48×7-bit matrix): 4
+  0xA7 (48×8-bit matrix): 43
+  0xA8 (48×9-bit matrix): 15
+  0xA9 (48×10-bit matrix): 41
+  0xAA (48×11-bit matrix): 28
+  0xAB (48×12-bit matrix): 3
+  0xC7 (112×8-bit matrix): 7
+  0xC8 (112×9-bit matrix): 6
+  0xC9 (112×10-bit matrix): 5
+  0xCA (112×11-bit matrix): 14
+  0xFD (absent run): 20
+  0xFE (zero run): 60
+  0xFF (SLEB128 run): 428
+
+SLEB128 run lengths (0xFF blocks):
+  len   1:         44  (10.28% cumulative)
+  len   2:         39  (19.39% cumulative)
+  len   3:         79  (37.85% cumulative)
+  len   4:         28  (44.39% cumulative)
+  len   5:         75  (61.92% cumulative)
+  len   6:         32  (69.39% cumulative)
+  len   7:         26  (75.47% cumulative)
+  len   8:        104  (99.77% cumulative)
+  len   9:          1  (100.00% cumulative)

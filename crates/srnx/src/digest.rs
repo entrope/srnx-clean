@@ -167,19 +167,12 @@ mod tests {
     /// End-to-end check that our CRC32C wrapper agrees with a real SRNX file
     /// on both polynomial and on-disk byte order.
     ///
-    /// The first chunk of `at012000.srnx` is `SRNX` with a 16-byte payload
+    /// The first chunk of `at01_v211_1hz.srnx` is `SRNX` with a 16-byte payload
     /// (single-byte ULEB128 length 0x10), followed by a 4-byte CRC32C of
     /// `FOURCC || length || payload`.
     #[test]
     fn crc32c_matches_real_srnx_chunk() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../rnx-data/at012000.srnx");
-        let bytes = match std::fs::read(path) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("skipping fixture test: {path} unavailable: {e}");
-                return;
-            }
-        };
+        let bytes = crate::test_data("at01_v211_1hz.srnx");
 
         // 4-byte FOURCC + 1-byte ULEB128 length (0x10) + 16-byte payload = 21.
         let covered = &bytes[..21];

@@ -1,0 +1,133 @@
+SRNX: version 1.0, chunk digest=2, file digest=5, SDIR offset=36779
+RHDR: 5154 bytes
+  Epochs: 120, Span: interval=30.0000000 s, count=120, 2022-07-02 00:00:00.0000000
+SDIR: 36779 offset, 22 satellites
+
+=== Aggregate Summary (1 files) ===
+
+Chunk totals:
+  EPOC: 1
+  SDIR: 1
+  EVTF: 0
+  SATE: 22
+  SOCD: 168
+  SOC2: 0
+
+Total epochs: 120
+
+Scale factors (observation unit multiples):
+  1: 119 SOCDs
+  0.1: 48 SOCDs
+  0.002: 1 SOCDs
+
+Delta orders:
+  order 1: 59 SOCDs
+  order 2: 32 SOCDs
+  order 3: 77 SOCDs
+
+Block headers:
+  0x02 (8×3-bit matrix): 3
+  0x03 (8×4-bit matrix): 10
+  0x04 (8×5-bit matrix): 13
+  0x05 (8×6-bit matrix): 16
+  0x06 (8×7-bit matrix): 14
+  0x07 (8×8-bit matrix): 9
+  0x08 (8×9-bit matrix): 6
+  0x09 (8×10-bit matrix): 19
+  0x0A (8×11-bit matrix): 2
+  0x0B (8×12-bit matrix): 15
+  0x0C (8×13-bit matrix): 27
+  0x0D (8×14-bit matrix): 44
+  0x0E (8×15-bit matrix): 36
+  0x0F (8×16-bit matrix): 34
+  0x10 (8×17-bit matrix): 8
+  0x11 (8×18-bit matrix): 69
+  0x12 (8×19-bit matrix): 3
+  0x13 (8×20-bit matrix): 10
+  0x14 (8×21-bit matrix): 13
+  0x16 (8×23-bit matrix): 3
+  0x17 (8×24-bit matrix): 5
+  0x18 (8×25-bit matrix): 6
+  0x19 (8×26-bit matrix): 10
+  0x1A (8×27-bit matrix): 5
+  0x1B (8×28-bit matrix): 6
+  0x1C (8×29-bit matrix): 4
+  0x1D (8×30-bit matrix): 4
+  0x1E (8×31-bit matrix): 2
+  0x1F (8×32-bit matrix): 2
+  0x23 (16×4-bit matrix): 10
+  0x24 (16×5-bit matrix): 11
+  0x25 (16×6-bit matrix): 7
+  0x26 (16×7-bit matrix): 3
+  0x27 (16×8-bit matrix): 3
+  0x2B (16×12-bit matrix): 11
+  0x2C (16×13-bit matrix): 14
+  0x2D (16×14-bit matrix): 25
+  0x2E (16×15-bit matrix): 12
+  0x2F (16×16-bit matrix): 2
+  0x31 (16×18-bit matrix): 2
+  0x32 (16×19-bit matrix): 1
+  0x33 (16×20-bit matrix): 7
+  0x38 (16×25-bit matrix): 1
+  0x39 (16×26-bit matrix): 1
+  0x3A (16×27-bit matrix): 1
+  0x3E (16×31-bit matrix): 1
+  0x43 (24×4-bit matrix): 3
+  0x44 (24×5-bit matrix): 5
+  0x45 (24×6-bit matrix): 2
+  0x46 (24×7-bit matrix): 2
+  0x47 (24×8-bit matrix): 3
+  0x4B (24×12-bit matrix): 6
+  0x4C (24×13-bit matrix): 8
+  0x4D (24×14-bit matrix): 10
+  0x4E (24×15-bit matrix): 29
+  0x4F (24×16-bit matrix): 11
+  0x50 (24×17-bit matrix): 22
+  0x5A (24×27-bit matrix): 1
+  0x63 (32×4-bit matrix): 5
+  0x64 (32×5-bit matrix): 5
+  0x65 (32×6-bit matrix): 3
+  0x66 (32×7-bit matrix): 3
+  0x67 (32×8-bit matrix): 1
+  0x6B (32×12-bit matrix): 1
+  0x6C (32×13-bit matrix): 10
+  0x6D (32×14-bit matrix): 3
+  0x6E (32×15-bit matrix): 32
+  0x6F (32×16-bit matrix): 2
+  0x70 (32×17-bit matrix): 4
+  0x83 (40×4-bit matrix): 1
+  0x84 (40×5-bit matrix): 7
+  0x85 (40×6-bit matrix): 1
+  0x86 (40×7-bit matrix): 1
+  0x87 (40×8-bit matrix): 1
+  0x8C (40×13-bit matrix): 3
+  0x8D (40×14-bit matrix): 2
+  0x8E (40×15-bit matrix): 3
+  0xA3 (48×4-bit matrix): 2
+  0xA4 (48×5-bit matrix): 6
+  0xA5 (48×6-bit matrix): 2
+  0xA6 (48×7-bit matrix): 3
+  0xAC (48×13-bit matrix): 8
+  0xAD (48×14-bit matrix): 2
+  0xAE (48×15-bit matrix): 2
+  0xC4 (112×5-bit matrix): 3
+  0xFD (absent run): 149
+  0xFE (zero run): 2
+  0xFF (SLEB128 run): 342
+
+SLEB128 run lengths (0xFF blocks):
+  len   1:         60  (17.54% cumulative)
+  len   2:         44  (30.41% cumulative)
+  len   3:         78  (53.22% cumulative)
+  len   4:         37  (64.04% cumulative)
+  len   5:         67  (83.63% cumulative)
+  len   6:          5  (85.09% cumulative)
+  len   7:         16  (89.77% cumulative)
+  len   8:         16  (94.44% cumulative)
+  len   9:          8  (96.78% cumulative)
+  len  10:          1  (97.08% cumulative)
+  len  11:          1  (97.37% cumulative)
+  len  12:          3  (98.25% cumulative)
+  len  13:          2  (98.83% cumulative)
+  len  14:          3  (99.71% cumulative)
+  len  16:          1  (100.00% cumulative)

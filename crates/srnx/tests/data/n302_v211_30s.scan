@@ -1,0 +1,25 @@
+SRNX: version 1.1, chunk digest=2, file digest=5, SDIR offset=30846
+RHDR: 5154 bytes
+  Epochs: 120, Span: interval=30.0000000 s, count=120, 2022-07-02 00:00:00.0000000
+SDIR: 30846 offset, 22 satellites
+
+=== Aggregate Summary (1 files) ===
+
+Chunk totals:
+  EPOC: 1
+  SDIR: 1
+  EVTF: 0
+  SATE: 22
+  SOCD: 0
+  SOC2: 168
+    predictor kinds: none 71, value 97, rate 0, extended 0
+    SSI references: 43
+    delta orders (predictor kind 0): 0 50 4 17 0 0 0 0
+    delta orders (predictor kind 1): 6 58 33 0 0 0 0 0
+    delta orders (predictor kind 2): 0 0 0 0 0 0 0 0
+
+Total epochs: 120
+
+Delta orders:
+
+Block headers:

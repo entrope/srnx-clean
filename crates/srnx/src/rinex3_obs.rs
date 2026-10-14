@@ -692,24 +692,12 @@ mod tests {
 
     // ---- fixture tests -----------------------------------------------
 
-    fn try_load(name: &str) -> Option<ObsFile> {
-        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("rnx-data")
-            .join(name);
-        let bytes = std::fs::read(path).ok()?;
-        Some(parse(&bytes, None).unwrap_or_else(|e| panic!("{name}: {e}")))
-    }
-
     #[test]
-    fn fixture_abmf_v304() {
-        let Some(f) = try_load("abmf.rnx") else {
-            return;
-        };
-        assert_eq!(f.header.get_line("MARKER NAME"), Some("ABMF".to_string()));
-        // Full day at 30 s.
-        assert_eq!(f.epochs.len(), 2_880);
+    fn fixture_balm_v304() {
+        let f = parse(&crate::test_rinex("balm_v304_1hz"), None).unwrap();
+        assert_eq!(f.header.get_line("MARKER NAME"), Some("BALM".to_string()));
+        // Two minutes at 1 s.
+        assert_eq!(f.epochs.len(), 120);
         let num_epochs = f.epochs.len();
         for series in f.observations.values() {
             assert!(series.windows(2).all(|w| w[0].0 < w[1].0));
@@ -717,21 +705,14 @@ mod tests {
         }
         let systems: std::collections::BTreeSet<u8> =
             f.observations.keys().map(|(s, _)| s.system.0).collect();
-        assert!(systems.is_superset(&b"GREC".iter().copied().collect()));
-    }
-
-    #[test]
-    fn fixture_twtf_v302() {
-        let Some(f) = try_load("TWTF00TWN_R_20201890000_01D_30S_MO.rnx") else {
-            return;
-        };
-        assert_eq!(f.epochs.len(), 2_880);
+        // BALM lists Galileo satellites but reports no observations for them.
+        assert_eq!(systems, b"CGJR".iter().copied().collect());
         let e0 = &f.epochs[0];
-        assert_eq!((e0.year, e0.month, e0.day), (2020, 7, 7));
-        // First epoch, first satellite: G16 C1C = 23056440.588, SSI 6.
-        let g16 = SatId::new(SatSystem::GPS, 16);
+        assert_eq!((e0.year, e0.month, e0.day), (2026, 10, 8));
+        // First epoch, first satellite: G05 C1C = 25053222.110, no flags.
+        let g05 = SatId::new(SatSystem::GPS, 5);
         let c1c = ObsCode::from_v3("C1C").unwrap();
-        let &(i, o) = f.observations[&(g16, c1c)].first().unwrap();
-        assert_eq!((i, o.value, o.lli, o.ssi), (0, 23_056_440_588, b' ', b'6'));
+        let &(i, o) = f.observations[&(g05, c1c)].first().unwrap();
+        assert_eq!((i, o.value, o.lli, o.ssi), (0, 25_053_222_110, b' ', b' '));
     }
 }

@@ -843,31 +843,21 @@ mod tests {
 
     // ---- fixture tests -----------------------------------------------
 
-    fn try_load_rinex2(name: &str) -> Option<ObsFile> {
-        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("rnx-data")
-            .join(name);
-        let bytes = std::fs::read(path).ok()?;
-        parse(&bytes, None).ok()
+    fn fixture(stem: &str) -> ObsFile {
+        parse(&crate::test_rinex(stem), None).unwrap()
     }
 
     #[test]
-    fn fixture_at012000_header_and_epoch_count() {
-        let Some(obs) = try_load_rinex2("at012000.20o") else {
-            return;
-        };
+    fn fixture_at01_header_and_epoch_count() {
+        let obs = fixture("at01_v211_1hz");
         assert_eq!(obs.header.get_line("MARKER NAME"), Some("AT01".to_string()));
-        // at012000 is a full day at 1s intervals = 86400 epochs.
-        assert_eq!(obs.epochs.len(), 86_400);
+        // Two minutes at 1 s.
+        assert_eq!(obs.epochs.len(), 120);
     }
 
     #[test]
-    fn fixture_at012000_first_epoch_timestamp() {
-        let Some(obs) = try_load_rinex2("at012000.20o") else {
-            return;
-        };
+    fn fixture_at01_first_epoch_timestamp() {
+        let obs = fixture("at01_v211_1hz");
         let e0 = &obs.epochs[0];
         assert_eq!(e0.year, 2020);
         assert_eq!(e0.month, 7);
@@ -879,10 +869,8 @@ mod tests {
     }
 
     #[test]
-    fn fixture_at012000_g13_l1_first_epoch() {
-        let Some(obs) = try_load_rinex2("at012000.20o") else {
-            return;
-        };
+    fn fixture_at01_g13_l1_first_epoch() {
+        let obs = fixture("at01_v211_1hz");
         // In the first epoch, G13 L1 = 128250890.432, SSI=5.
         let l1 = ObsCode::from_v2("L1").unwrap();
         let g13 = SatId::new(SatSystem::GPS, 13);
@@ -896,10 +884,8 @@ mod tests {
     }
 
     #[test]
-    fn fixture_at012000_s1_first_epoch() {
-        let Some(obs) = try_load_rinex2("at012000.20o") else {
-            return;
-        };
+    fn fixture_at01_s1_first_epoch() {
+        let obs = fixture("at01_v211_1hz");
         // G13 S1 = 35.250 in epoch 0 (obs index 5 on obs line 2).
         let s1 = ObsCode::from_v2("S1").unwrap();
         let g13 = SatId::new(SatSystem::GPS, 13);
@@ -910,68 +896,33 @@ mod tests {
     }
 
     #[test]
-    fn fixture_at012000_observation_series_sorted() {
-        let Some(obs) = try_load_rinex2("at012000.20o") else {
-            return;
-        };
-        // Every observation series must have epoch indices in ascending order,
-        // within the valid range, and contain at least one entry.
-        let num_epochs = obs.epochs.len();
-        for (key, series) in &obs.observations {
-            assert!(
-                !series.is_empty(),
-                "empty series for {}/{}",
-                key.0,
-                key.1.as_str()
-            );
-            assert!(
-                series.windows(2).all(|w| w[0].0 < w[1].0),
-                "series for {}/{} is not sorted",
-                key.0,
-                key.1.as_str()
-            );
-            assert!(
-                series.last().map(|&(i, _)| i).unwrap() < num_epochs,
-                "epoch index out of range for {}/{}",
-                key.0,
-                key.1.as_str()
-            );
+    fn fixture_observation_series_sorted() {
+        for stem in ["at01_v211_1hz", "n302_v211_30s", "mty2_v211_15s"] {
+            let obs = fixture(stem);
+            // Every observation series must have epoch indices in ascending
+            // order, within the valid range, and contain at least one entry.
+            let num_epochs = obs.epochs.len();
+            for (key, series) in &obs.observations {
+                let name = format!("{stem}: {}/{}", key.0, key.1.as_str());
+                assert!(!series.is_empty(), "{name}: empty series");
+                assert!(
+                    series.windows(2).all(|w| w[0].0 < w[1].0),
+                    "{name}: not sorted"
+                );
+                assert!(
+                    series.last().map(|&(i, _)| i).unwrap() < num_epochs,
+                    "{name}: epoch index out of range"
+                );
+            }
         }
     }
 
     #[test]
-    fn fixture_mty22000_parses() {
-        let Some(obs) = try_load_rinex2("mty22000.20o") else {
-            return;
-        };
-        // Confirm header is parseable (obs codes tested in rinex_header module).
-        assert!(obs.header.get_line("RINEX VERSION / TYPE").is_some());
-        // mty22000 is also a full day at 15s intervals = 86400/15 = 5760 epochs.
-        assert_eq!(obs.epochs.len(), 5_760);
-    }
-
-    #[test]
-    fn fixture_okcb1200_parses() {
-        let Some(obs) = try_load_rinex2("okcb1200.26o") else {
-            return;
-        };
-        // Confirm header is parseable (obs codes tested in rinex_header module).
-        assert!(obs.header.get_line("RINEX VERSION / TYPE").is_some());
-        // okcb1200 runs 2026-04-30 for 24 hours at 1s = 86400 epochs.
-        assert_eq!(obs.epochs.len(), 86_400);
-    }
-
-    #[test]
-    fn fixture_sbst1200_parses() {
-        let Some(obs) = try_load_rinex2("sbst1200.26o") else {
-            return;
-        };
-        assert_ne!(obs.epochs, []);
-        let num_epochs = obs.epochs.len();
-        for series in obs.observations.values() {
-            // Sparse series: epoch indices must be sorted and within range.
-            assert!(series.windows(2).all(|w| w[0].0 < w[1].0));
-            assert!(series.last().map_or(0, |&(i, _)| i) < num_epochs);
-        }
+    fn fixture_mty2_event() {
+        // 80 records at 15 s; record 40 is a flag-4 event, not an epoch.
+        let obs = fixture("mty2_v211_15s");
+        assert_eq!(obs.epochs.len(), 79);
+        assert_eq!(obs.events.len(), 1);
+        assert_eq!((obs.events[0].0, obs.events[0].1.flag), (40, 4));
     }
 }

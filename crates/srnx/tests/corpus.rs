@@ -1,651 +1,206 @@
-//! Phase 9 corpus-wide integration tests.
+//! Bring-your-own-corpus tests, run only when `SRNX_CORPUS` names a
+//! directory of observation files.  Each file is checked against the
+//! reference tools, which must be on `PATH`: `rnx2srnx`, `srnx2rnx` and
+//! `srnx_scan` (SRNX), and `crx2rnx` (RNXCMP; `$CRX2RNX` overrides it).
 //!
-//! Three test categories:
-//!   1. Golden stats — parse each `.srnx` fixture, compute chunk-count /
-//!      scale / delta-order / block-header histograms, compare against the
-//!      `srnx_scan` reference tool output.  Tests are skipped gracefully when
-//!      either the fixture or `srnx_scan` is unavailable.
-//!   2. Round-trip semantics — for each RINEX / SRNX file pair, parse
-//!      both with our readers and assert `srnx-diff`-style equality.
-//!   3. Digest-corruption negatives — flip bits in file regions covered by
-//!      CRC32C and verify the mismatch is reported.
+//! - RINEX and Compact RINEX files are converted with `rnx2srnx`, both to
+//!   SOC2 (revision 1.1, or 1.2 for picosecond epochs) and with `--socd`
+//!   (revision 1.0).  Our reading of each SRNX file must match our reading
+//!   of the source, and of `srnx2rnx`'s decoding of the SRNX file.
+//! - Our Compact RINEX decompression must match `crx2rnx` byte for byte.
+//! - SRNX files must match `srnx2rnx`'s decoding and `srnx_scan`'s
+//!   statistics.
+//!
+//! Files in other formats are skipped, as are files the reference tools
+//! reject (if we reject them too).  Every file is checked, and the test
+//! fails at the end if any check failed.  Large files take a while;
+//! `--release` helps.
 
-#![allow(clippy::similar_names)]
+mod common;
 
-use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::panic::{self, AssertUnwindSafe};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use srnx::diff;
-use srnx::file::SrnxFile;
-use srnx::rinex2_obs;
-use srnx::rinex3_obs;
-use srnx::socd;
-use srnx::srnx_reader;
+use srnx::crinex;
+use srnx::model::ObsFile;
+use srnx::reader::{self, Format};
 
-// ── Fixture path helper ───────────────────────────────────────────────────────
+/// A temporary file, removed when dropped.
+struct TempFile(PathBuf);
 
-fn rnx_data(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("rnx-data")
-        .join(name)
-}
-
-fn try_load(name: &str) -> Option<Vec<u8>> {
-    std::fs::read(rnx_data(name)).ok()
-}
-
-// ── Aggregate SRNX statistics ─────────────────────────────────────────────────
-
-struct SrnxStats {
-    chunk_counts: BTreeMap<[u8; 4], usize>,
-    total_epochs: usize,
-    scale_histogram: BTreeMap<u32, usize>,
-    delta_order_histogram: BTreeMap<u8, usize>,
-    block_header_histogram: BTreeMap<u8, usize>,
-}
-
-fn compute_stats(bytes: &[u8]) -> SrnxStats {
-    let file = SrnxFile::parse(bytes).expect("SrnxFile::parse");
-    let chunk_counts = file.count_by_fourcc();
-    let total_epochs = file.epoc().expect("epoc()").map_or(0, |e| e.epochs.len());
-
-    let mut scale_histogram = BTreeMap::<u32, usize>::new();
-    let mut delta_order_histogram = BTreeMap::<u8, usize>::new();
-    let mut block_header_histogram = BTreeMap::<u8, usize>::new();
-
-    for chunk in &file.chunks {
-        if chunk.fourcc == *b"SOCD" {
-            let s = socd::parse(chunk.payload)
-                .unwrap_or_else(|e| panic!("SOCD at {} failed: {e}", chunk.file_offset));
-            *scale_histogram.entry(s.scale).or_default() += 1;
-            *delta_order_histogram.entry(s.delta_order).or_default() += 1;
-            for (&hdr, &cnt) in &s.block_header_counts {
-                *block_header_histogram.entry(hdr).or_default() += cnt;
-            }
-        }
-    }
-
-    SrnxStats {
-        chunk_counts,
-        total_epochs,
-        scale_histogram,
-        delta_order_histogram,
-        block_header_histogram,
+impl TempFile {
+    fn new(extension: &str) -> Self {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        Self(std::env::temp_dir().join(format!(
+            "srnx-corpus-{}-{n}.{extension}",
+            std::process::id()
+        )))
     }
 }
 
-// ── srnx_scan output parser ───────────────────────────────────────────────────
-
-struct ScanSummary {
-    chunk_counts: BTreeMap<[u8; 4], usize>,
-    total_epochs: usize,
-    /// Scale key uses our internal `Socd.scale` convention:
-    /// - `srnx_scan` `"1"`    → 1   (default / implicit-1000×)
-    /// - `srnx_scan` `"0.25"` → 250 (explicit 250)
-    /// - `srnx_scan` `"0.02"` → 20  (explicit 20)
-    scale_histogram: BTreeMap<u32, usize>,
-    delta_order_histogram: BTreeMap<u8, usize>,
-    block_header_histogram: BTreeMap<u8, usize>,
-}
-
-/// Convert a `srnx_scan` scale-factor display string to our internal u32 scale.
-fn scan_scale_to_ours(s: &str) -> u32 {
-    let f: f64 = s.trim().parse().unwrap_or(1.0);
-    if (f - 1.0).abs() < 1e-9 {
-        1 // default (no explicit scale) — our code stores 1
-    } else {
-        // Scale values are always small positive integers (1–1000); cast is safe.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        {
-            (f * 1000.0).round() as u32
-        }
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
     }
 }
 
-#[derive(PartialEq)]
-enum Sec {
-    None,
-    Chunks,
-    Scale,
-    Delta,
-    Blocks,
-}
-
-fn run_srnx_scan(path: &PathBuf) -> Option<ScanSummary> {
-    let output = std::process::Command::new("srnx_scan")
-        .arg(path)
+/// Run a reference tool.  `Ok(None)` if it ran and failed (for example by
+/// rejecting the file); `Err` if it could not be run at all.
+fn tool(
+    program: impl AsRef<std::ffi::OsStr>,
+    args: &[&Path],
+    stdin: Option<&Path>,
+) -> Result<Option<Vec<u8>>, String> {
+    let program = program.as_ref();
+    let mut command = Command::new(program);
+    command.args(args).stderr(Stdio::piped());
+    if let Some(path) = stdin {
+        command.stdin(std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?);
+    }
+    let output = command
         .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    parse_scan_output(std::str::from_utf8(&output.stdout).ok()?)
+        .map_err(|e| format!("cannot run {}: {e}", program.to_string_lossy()))?;
+    Ok(output.status.success().then_some(output.stdout))
 }
 
-#[allow(clippy::too_many_lines)]
-fn parse_scan_output(text: &str) -> Option<ScanSummary> {
-    // Only look at the aggregate summary section (handles both 1-file and
-    // multi-file invocations uniformly).
-    let agg = text.find("=== Aggregate Summary")?;
-    let text = &text[agg..];
-
-    let mut chunk_counts = BTreeMap::new();
-    let mut total_epochs = 0usize;
-    let mut scale_histogram = BTreeMap::new();
-    let mut delta_order_histogram = BTreeMap::new();
-    let mut block_header_histogram = BTreeMap::new();
-
-    let mut sec = Sec::None;
-
-    for raw in text.lines() {
-        let line = raw.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if line.starts_with("Chunk totals:") {
-            sec = Sec::Chunks;
-            continue;
-        }
-        if line.starts_with("Scale factors") {
-            sec = Sec::Scale;
-            continue;
-        }
-        if line.starts_with("Delta orders:") {
-            sec = Sec::Delta;
-            continue;
-        }
-        if line.starts_with("Block headers:") {
-            sec = Sec::Blocks;
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("Total epochs:") {
-            total_epochs = rest.trim().parse().unwrap_or(0);
-            continue;
-        }
-        if line.starts_with("===") {
-            sec = Sec::None;
-            continue;
-        }
-
-        match sec {
-            Sec::Chunks => {
-                // "EPOC: 1"
-                if let Some((name, n)) = line.split_once(": ") {
-                    let name = name.trim();
-                    if name.len() == 4 {
-                        if let Ok(tag) = <[u8; 4]>::try_from(name.as_bytes()) {
-                            let count: usize = n.trim().parse().unwrap_or(0);
-                            chunk_counts.insert(tag, count);
-                        }
-                    }
-                }
-            }
-            Sec::Scale => {
-                // "1: 487 SOCDs"  or  "0.25: 218 SOCDs"
-                if let Some((scale_s, rest)) = line.split_once(": ") {
-                    let count: usize = rest
-                        .split_whitespace()
-                        .next()
-                        .and_then(|s| s.parse().ok())
-                        .unwrap_or(0);
-                    let key = scan_scale_to_ours(scale_s.trim());
-                    *scale_histogram.entry(key).or_default() += count;
-                }
-            }
-            Sec::Delta => {
-                // "order 1: 218 SOCDs"
-                if let Some(rest) = line.strip_prefix("order ") {
-                    if let Some((order_s, count_rest)) = rest.split_once(": ") {
-                        let order: u8 = order_s.trim().parse().unwrap_or(255);
-                        let count: usize = count_rest
-                            .split_whitespace()
-                            .next()
-                            .and_then(|s| s.parse().ok())
-                            .unwrap_or(0);
-                        *delta_order_histogram.entry(order).or_default() += count;
-                    }
-                }
-            }
-            Sec::Blocks => {
-                // "0x00 (8×1-bit matrix): 11790"
-                // "0xFD (absent run): 10713"
-                if let Some(rest) = line.strip_prefix("0x") {
-                    if rest.len() >= 2 {
-                        if let Ok(header) = u8::from_str_radix(&rest[..2], 16) {
-                            if let Some(pos) = line.rfind(": ") {
-                                let count: usize = line[pos + 2..].trim().parse().unwrap_or(0);
-                                *block_header_histogram.entry(header).or_default() += count;
-                            }
-                        }
-                    }
-                }
-            }
-            Sec::None => {}
-        }
-    }
-
-    Some(ScanSummary {
-        chunk_counts,
-        total_epochs,
-        scale_histogram,
-        delta_order_histogram,
-        block_header_histogram,
-    })
+fn read(bytes: &[u8], label: &str) -> ObsFile {
+    reader::read(bytes).unwrap_or_else(|e| panic!("{label}: {e}"))
 }
 
-// ── Golden test harness ───────────────────────────────────────────────────────
+/// Our reading of `srnx2rnx`'s decoding of `srnx` must match `expected`.
+fn check_srnx2rnx(srnx: &Path, expected: &ObsFile, label: &str) -> Result<(), String> {
+    let decoded = TempFile::new("rnx");
+    if tool("srnx2rnx", &[srnx, &decoded.0], None)?.is_none() {
+        return Err(format!("{label}: srnx2rnx failed"));
+    }
+    let from_tool = read(&std::fs::read(&decoded.0).unwrap(), "srnx2rnx output");
+    common::assert_same(expected, &from_tool, label, "srnx2rnx output");
+    Ok(())
+}
 
-fn golden(name: &str) {
-    let Some(bytes) = try_load(name) else {
-        eprintln!("skip golden {name}: fixture not found");
+/// Convert a RINEX or Compact RINEX file with `rnx2srnx` and compare.
+fn check_rinex(path: &Path, source: &ObsFile) -> Result<(), String> {
+    for options in [&[][..], &["--socd"][..]] {
+        let srnx = TempFile::new("srnx");
+        let mut args: Vec<&Path> = options.iter().map(Path::new).collect();
+        args.extend([path, srnx.0.as_path()]);
+        if tool("rnx2srnx", &args, None)?.is_none() {
+            eprintln!("skip {}: rnx2srnx {options:?} rejected it", path.display());
+            return Ok(());
+        }
+        let label = format!("rnx2srnx {options:?} output");
+        let converted = read(&std::fs::read(&srnx.0).unwrap(), &label);
+        common::assert_same(source, &converted, &path.display().to_string(), &label);
+        check_srnx2rnx(&srnx.0, &converted, &label)?;
+    }
+    Ok(())
+}
+
+fn check_crinex(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let program = std::env::var_os("CRX2RNX").unwrap_or_else(|| "crx2rnx".into());
+    let Some(want) = tool(program, &[Path::new("-")], Some(path))? else {
+        eprintln!("skip {}: crx2rnx rejected it", path.display());
+        return Ok(());
+    };
+    let got = crinex::decompress(bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    if got != want {
+        return Err(format!(
+            "{}: decompression differs from crx2rnx",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn check_srnx(path: &Path, bytes: &[u8], file: &ObsFile) -> Result<(), String> {
+    check_srnx2rnx(path, file, &path.display().to_string())?;
+    let Some(scan) = tool("srnx_scan", &[path], None)? else {
+        return Err(format!("{}: srnx_scan failed", path.display()));
+    };
+    common::assert_matches_scan(
+        bytes,
+        &String::from_utf8_lossy(&scan),
+        &path.display().to_string(),
+    );
+    Ok(())
+}
+
+/// Whether the reference tool for `format` accepts the file at `path`.
+fn reference_accepts(path: &Path, format: Format) -> Result<bool, String> {
+    let output = TempFile::new("out");
+    let program = if format == Format::Srnx {
+        "srnx2rnx"
+    } else {
+        "rnx2srnx"
+    };
+    Ok(tool(program, &[path, &output.0], None)?.is_some())
+}
+
+fn check_file(path: &Path) -> Result<bool, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let Some(format) = Format::detect(&bytes) else {
+        eprintln!("skip {}: not an observation file", path.display());
+        return Ok(false);
+    };
+    let file = match reader::read(&bytes) {
+        Ok(file) => file,
+        Err(e) if !reference_accepts(path, format)? => {
+            eprintln!(
+                "skip {}: we and the reference tool both reject it ({e})",
+                path.display()
+            );
+            return Ok(false);
+        }
+        Err(e) => {
+            return Err(format!(
+                "{}: {e} (the reference tool accepts it)",
+                path.display()
+            ))
+        }
+    };
+    match format {
+        Format::Srnx => check_srnx(path, &bytes, &file)?,
+        Format::Crinex => {
+            check_crinex(path, &bytes)?;
+            check_rinex(path, &file)?;
+        }
+        _ => check_rinex(path, &file)?,
+    }
+    Ok(true)
+}
+
+#[test]
+fn corpus() {
+    let Some(dir) = std::env::var_os("SRNX_CORPUS") else {
+        eprintln!("skip corpus test: set SRNX_CORPUS to a directory of observation files");
         return;
     };
-    let Some(expected) = run_srnx_scan(&rnx_data(name)) else {
-        eprintln!("skip golden {name}: srnx_scan unavailable or failed");
-        return;
-    };
-    let actual = compute_stats(&bytes);
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("{}: {e}", Path::new(&dir).display()))
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.is_file())
+        .collect();
+    paths.sort();
 
-    // Chunk counts
-    for (tag, &exp) in &expected.chunk_counts {
-        let act = actual.chunk_counts.get(tag).copied().unwrap_or(0);
-        assert_eq!(
-            act,
-            exp,
-            "{name}: chunk count for {}",
-            std::str::from_utf8(tag).unwrap_or("????")
-        );
-    }
-
-    // Total epoch count
-    assert_eq!(
-        actual.total_epochs, expected.total_epochs,
-        "{name}: epoch count"
-    );
-
-    // Scale-factor distribution
-    assert_eq!(
-        actual.scale_histogram, expected.scale_histogram,
-        "{name}: scale-factor histogram"
-    );
-
-    // Delta-order distribution
-    assert_eq!(
-        actual.delta_order_histogram, expected.delta_order_histogram,
-        "{name}: delta-order histogram"
-    );
-
-    // Block-header distribution
-    assert_eq!(
-        actual.block_header_histogram, expected.block_header_histogram,
-        "{name}: block-header histogram"
-    );
-}
-
-#[test]
-fn golden_n3021830() {
-    golden("n3021830.srnx");
-}
-
-#[test]
-fn golden_ctbk1830() {
-    golden("ctbk1830.srnx");
-}
-
-#[test]
-fn golden_azst1830() {
-    golden("azst1830.srnx");
-}
-
-#[test]
-fn golden_abmf() {
-    golden("abmf.srnx");
-}
-
-#[test]
-fn golden_mty22000() {
-    golden("mty22000.srnx");
-}
-
-// Large files: skipped in fast CI, run with `cargo test -- --include-ignored`.
-
-#[test]
-#[ignore = "large file: 86400 epochs × 73 sats"]
-fn golden_at012000() {
-    golden("at012000.srnx");
-}
-
-#[test]
-#[ignore = "large file: 86400 epochs × 31 sats"]
-fn golden_bet11830() {
-    golden("bet11830.srnx");
-}
-
-#[test]
-#[ignore = "very large: 86400 epochs × 81 sats"]
-fn golden_okcb1200() {
-    golden("okcb1200.srnx");
-}
-
-#[test]
-#[ignore = "very large: 86400 epochs × 81 sats"]
-fn golden_sbst1200() {
-    golden("sbst1200.srnx");
-}
-
-// ── Round-trip semantic comparison ───────────────────────────────────────────
-
-/// Returns a list of human-readable difference strings (empty = files match).
-fn compare_obs_files(
-    a: &srnx::model::ObsFile,
-    b: &srnx::model::ObsFile,
-    la: &str,
-    lb: &str,
-) -> Vec<String> {
-    diff::compare(a, b, la, lb)
-}
-
-// ── Static round-trip tests (pre-existing RINEX v2 / SRNX file pairs) ────────
-
-fn round_trip(rnx_name: &str, srnx_name: &str) {
-    let (Some(rnx_b), Some(srnx_b)) = (try_load(rnx_name), try_load(srnx_name)) else {
-        eprintln!("skip round_trip {rnx_name}: fixture(s) not found");
-        return;
-    };
-    let rnx = rinex2_obs::parse(&rnx_b, None).unwrap_or_else(|e| panic!("{rnx_name}: {e}"));
-    let srnx = srnx_reader::read(&srnx_b, None).unwrap_or_else(|e| panic!("{srnx_name}: {e}"));
-    let diffs = compare_obs_files(&rnx, &srnx, rnx_name, srnx_name);
-    assert!(
-        diffs.is_empty(),
-        "{rnx_name} vs {srnx_name}: {} diff(s):\n{}",
-        diffs.len(),
-        diffs.join("\n")
-    );
-}
-
-#[test]
-fn round_trip_at012000() {
-    round_trip("at012000.20o", "at012000.srnx");
-}
-
-#[test]
-fn round_trip_mty22000() {
-    round_trip("mty22000.20o", "mty22000.srnx");
-}
-
-#[test]
-fn round_trip_n3021830() {
-    round_trip("n3021830.22o", "n3021830.srnx");
-}
-
-#[test]
-fn round_trip_ctbk1830() {
-    round_trip("ctbk1830.22o", "ctbk1830.srnx");
-}
-
-#[test]
-fn round_trip_azst1830() {
-    round_trip("azst1830.22o", "azst1830.srnx");
-}
-
-#[test]
-#[ignore = "very large: 86400 epochs × 81 sats"]
-fn round_trip_okcb1200() {
-    round_trip("okcb1200.26o", "okcb1200.srnx");
-}
-
-#[test]
-#[ignore = "very large: 86400 epochs × 81 sats"]
-fn round_trip_sbst1200() {
-    round_trip("sbst1200.26o", "sbst1200.srnx");
-}
-
-// ── Dynamic round-trip test (invokes rnx2srnx) ────────────────────────────────
-
-/// Run `rnx2srnx` on n3021830.22o, then compare the freshly-generated SRNX
-/// against our RINEX v2 reader.  Skipped if `rnx2srnx` is not in `PATH`.
-#[test]
-fn dynamic_round_trip_n3021830() {
-    let rnx_path = rnx_data("n3021830.22o");
-    if !rnx_path.exists() {
-        eprintln!("skip dynamic_round_trip: n3021830.22o not found");
-        return;
-    }
-
-    let tmp = std::env::temp_dir().join("srnx_corpus_test_n3021830.srnx");
-
-    match std::process::Command::new("rnx2srnx")
-        .arg(&rnx_path)
-        .arg(&tmp)
-        .status()
-    {
-        Ok(s) if s.success() => {}
-        Ok(s) => {
-            let _ = std::fs::remove_file(&tmp);
-            panic!("rnx2srnx exited with {s}");
-        }
-        Err(_) => {
-            eprintln!("skip dynamic_round_trip: rnx2srnx not available");
-            return;
+    let mut checked = 0;
+    let mut failures = Vec::new();
+    for path in &paths {
+        match panic::catch_unwind(AssertUnwindSafe(|| check_file(path))) {
+            Ok(Ok(true)) => checked += 1,
+            Ok(Ok(false)) => {}
+            Ok(Err(message)) => failures.push(message),
+            Err(payload) => failures.push(
+                payload
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+                    .unwrap_or_else(|| format!("{}: panicked", path.display())),
+            ),
         }
     }
-
-    let rnx_b = std::fs::read(&rnx_path).expect("read rnx");
-    let srnx_b = std::fs::read(&tmp).expect("read temp srnx");
-    let _ = std::fs::remove_file(&tmp);
-
-    let rnx = rinex2_obs::parse(&rnx_b, None).expect("parse RINEX v2");
-    let srnx = srnx_reader::read(&srnx_b, None).expect("parse generated SRNX");
-
-    let diffs = compare_obs_files(&rnx, &srnx, "n3021830.22o", "rnx2srnx-output");
-    assert!(
-        diffs.is_empty(),
-        "dynamic round-trip n3021830: {} diff(s):\n{}",
-        diffs.len(),
-        diffs.join("\n")
-    );
-}
-
-/// Run `rnx2srnx` on a RINEX v3 file, then compare the generated SRNX against
-/// our RINEX v3/v4 reader.  Skipped if the fixture or `rnx2srnx` is missing.
-fn dynamic_round_trip_v3(name: &str) {
-    let rnx_path = rnx_data(name);
-    let Ok(rnx_b) = std::fs::read(&rnx_path) else {
-        eprintln!("skip dynamic_round_trip_v3: {name} not found");
-        return;
-    };
-    let tmp = std::env::temp_dir().join(format!("srnx_corpus_test_{name}.srnx"));
-    match std::process::Command::new("rnx2srnx")
-        .arg(&rnx_path)
-        .arg(&tmp)
-        .status()
-    {
-        Ok(s) if s.success() => {}
-        Ok(s) => {
-            let _ = std::fs::remove_file(&tmp);
-            panic!("rnx2srnx {name} exited with {s}");
-        }
-        Err(_) => {
-            eprintln!("skip dynamic_round_trip_v3: rnx2srnx not available");
-            return;
-        }
-    }
-    let srnx_b = std::fs::read(&tmp).expect("read temp srnx");
-    let _ = std::fs::remove_file(&tmp);
-
-    let rnx = rinex3_obs::parse(&rnx_b, None).unwrap_or_else(|e| panic!("{name}: {e}"));
-    let srnx = srnx_reader::read(&srnx_b, None).expect("parse generated SRNX");
-    assert!(!rnx.observations.is_empty(), "{name}: no observations");
-    let diffs = compare_obs_files(&rnx, &srnx, name, "rnx2srnx-output");
-    assert!(
-        diffs.is_empty(),
-        "dynamic round-trip {name}: {} diff(s):\n{}",
-        diffs.len(),
-        diffs.join("\n")
-    );
-}
-
-#[test]
-fn dynamic_round_trip_twtf_v302() {
-    dynamic_round_trip_v3("TWTF00TWN_R_20201890000_01D_30S_MO.rnx");
-}
-
-#[test]
-fn dynamic_round_trip_abmf_v304() {
-    dynamic_round_trip_v3("abmf.rnx");
-}
-
-/// Flag-1 and flag-6 records must be EVTF-only in SRNX and events in our
-/// RINEX v2 reader, so both sides agree on the observation epochs.
-#[test]
-fn dynamic_round_trip_v2_flag1_flag6() {
-    let rnx_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("data")
-        .join("rinex211_flag1_flag6.rnx");
-    let tmp = std::env::temp_dir().join(format!(
-        "srnx_corpus_test_flag1_flag6_{}.srnx",
-        std::process::id()
-    ));
-    match std::process::Command::new("rnx2srnx")
-        .arg(&rnx_path)
-        .arg(&tmp)
-        .status()
-    {
-        Ok(s) if s.success() => {}
-        Ok(s) => panic!("rnx2srnx exited with {s}"),
-        Err(_) => {
-            eprintln!("skip dynamic_round_trip_v2_flag1_flag6: rnx2srnx not available");
-            return;
-        }
-    }
-    let srnx_b = std::fs::read(&tmp).expect("read temp srnx");
-    let _ = std::fs::remove_file(&tmp);
-
-    let rnx = rinex2_obs::parse(&std::fs::read(&rnx_path).unwrap(), None).expect("parse RINEX v2");
-    let srnx = srnx_reader::read(&srnx_b, None).expect("parse generated SRNX");
-    assert_eq!(rnx.epochs.len(), 2);
-    assert_eq!(rnx.events.len(), srnx.events.len());
-    let diffs = compare_obs_files(&rnx, &srnx, "rinex211_flag1_flag6.rnx", "rnx2srnx-output");
-    assert!(diffs.is_empty(), "{}", diffs.join("\n"));
-}
-
-// ── Negative tests: digest corruption ────────────────────────────────────────
-
-/// Return the number of LEB128 bytes needed to encode `n`.
-fn leb128_len(mut n: usize) -> usize {
-    let mut len = 1;
-    while n >= 128 {
-        n >>= 7;
-        len += 1;
-    }
-    len
-}
-
-/// Corrupt a byte deep inside a body chunk's payload; its CRC32C must fail.
-#[test]
-fn corrupt_body_chunk_detected() {
-    let Some(bytes) = try_load("at012000.srnx") else {
-        eprintln!("skip corrupt_body_chunk: fixture not found");
-        return;
-    };
-    let file = SrnxFile::parse(&bytes).expect("initial parse");
-
-    let rhdr = file
-        .chunks
-        .iter()
-        .find(|c| c.fourcc == *b"RHDR")
-        .expect("RHDR present");
-
-    // Payload starts at: file_offset + 4 (FOURCC) + leb128_len(payload.len()).
-    #[allow(clippy::cast_possible_truncation)]
-    let payload_start = rhdr.file_offset as usize + 4 + leb128_len(rhdr.payload.len());
-    let corrupt_at = payload_start + 128; // well inside the 2736-byte RHDR payload
-
-    let mut tampered = bytes.clone();
-    tampered[corrupt_at] ^= 0xFF;
-
-    let file2 = SrnxFile::parse(&tampered).expect("parse still succeeds despite corruption");
-    assert!(
-        file2
-            .chunks
-            .iter()
-            .find(|c| c.fourcc == *b"RHDR")
-            .is_some_and(|c| !c.digest_ok),
-        "RHDR per-chunk digest should fail after payload corruption"
-    );
-}
-
-/// Flip a bit in the SRNX header chunk's own per-chunk CRC32C;
-/// `srnx_digest_ok` must become `false`.
-#[test]
-fn corrupt_srnx_chunk_digest_detected() {
-    let Some(bytes) = try_load("at012000.srnx") else {
-        eprintln!("skip corrupt_srnx_digest: fixture not found");
-        return;
-    };
-
-    let file = SrnxFile::parse(&bytes).expect("initial parse");
-    assert!(
-        file.srnx_digest_ok,
-        "pristine file must have valid SRNX digest"
-    );
-
-    // The SRNX chunk's CRC32C (4 bytes) sits immediately before the first
-    // body chunk.
-    #[allow(clippy::cast_possible_truncation)]
-    let body_start = file.chunks.first().expect("has body chunks").file_offset as usize;
-    let crc_start = body_start - 4; // CRC32C is 4 bytes
-
-    let mut tampered = bytes.clone();
-    tampered[crc_start] ^= 0x01;
-
-    let file2 = SrnxFile::parse(&tampered).expect("parse still succeeds");
-    assert!(
-        !file2.srnx_digest_ok,
-        "SRNX chunk digest should fail after CRC corruption"
-    );
-}
-
-// ── EVTF parsing ─────────────────────────────────────────────────────────────
-
-/// Verify that EVTF chunks are parsed and populated in the [`ObsFile`].
-#[test]
-fn evtf_azst1830_has_events() {
-    let Some(bytes) = try_load("azst1830.srnx") else {
-        eprintln!("skip evtf_azst1830: fixture not found");
-        return;
-    };
-    let file = srnx::srnx_reader::read(&bytes, None).expect("parse azst1830.srnx");
-    // azst1830 has 23 EVTF chunks per srnx_scan.
-    assert!(
-        file.events.len() >= 23,
-        "expected at least 23 events, got {}",
-        file.events.len()
-    );
-    // Each event should have at least one line of text.
-    for (epoch_idx, event) in &file.events {
-        assert!(
-            !event.lines.is_empty(),
-            "event at epoch {epoch_idx} has no text lines"
-        );
-    }
-}
-
-/// Verify that files without EVTF chunks have an empty events list.
-#[test]
-fn evtf_abmf_no_events() {
-    let Some(bytes) = try_load("abmf.srnx") else {
-        eprintln!("skip evtf_abmf: fixture not found");
-        return;
-    };
-    let file = srnx::srnx_reader::read(&bytes, None).expect("parse abmf.srnx");
-    // abmf has 0 EVTF chunks per srnx_scan.
-    assert!(
-        file.events.is_empty(),
-        "expected no events, got {}",
-        file.events.len()
-    );
+    eprintln!("checked {checked} files, {} failed", failures.len());
+    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }

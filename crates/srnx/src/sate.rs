@@ -225,40 +225,28 @@ mod tests {
 
     // ---- Fixture tests -------------------------------------------------------
 
-    fn try_load_sate(srnx_name: &str) -> Option<(Vec<u8>, usize, usize)> {
-        // Returns (sate_payload, num_obs_codes, total_epochs) for the first sat.
-        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("rnx-data")
-            .join(srnx_name);
-        let bytes = std::fs::read(path).ok()?;
-        let file = crate::file::SrnxFile::parse(&bytes).ok()?;
-        let sdir = file.sdir().ok().flatten()?;
-        let entry = sdir.satellites.first()?;
-        let sate_chunk = file.chunk_at_offset(entry.sate_offset)?;
-        let epoc = file.epoc().ok().flatten()?;
-        let total_epochs = epoc.epochs.len();
-
-        // Parse RHDR to get num_obs_codes.
-        let rhdr_bytes = file.rhdr_payload()?;
-        let header = crate::rinex_header::parse(rhdr_bytes).ok()?;
-        let first_system = header.obs_codes.by_system.first()?;
-        let num_obs_codes = header.obs_codes.total_codes();
+    /// The first satellite's SATE payload, the number of observation codes,
+    /// and the number of epochs in an SRNX fixture.
+    fn first_sate(srnx_name: &str) -> (Vec<u8>, usize, usize) {
+        let bytes = crate::test_data(srnx_name);
+        let file = crate::file::SrnxFile::parse(&bytes).unwrap();
+        let sdir = file.sdir().unwrap().unwrap();
+        let sate_chunk = file
+            .chunk_at_offset(sdir.satellites[0].sate_offset)
+            .unwrap();
+        let total_epochs = file.epoc().unwrap().unwrap().epochs.len();
+        let header = crate::rinex_header::parse(file.rhdr_payload().unwrap()).unwrap();
         // For v2 mixed-system files there is one shared code list.
-        let _ = first_system;
-
-        Some((sate_chunk.payload.to_vec(), num_obs_codes, total_epochs))
+        let num_obs_codes = header.obs_codes.total_codes();
+        (sate_chunk.payload.to_vec(), num_obs_codes, total_epochs)
     }
 
     #[test]
-    fn fixture_at012000_sate_e01() {
-        let Some((payload, num_obs, total_epochs)) = try_load_sate("at012000.srnx") else {
-            return;
-        };
-        // at012000: 20 obs codes, 86400 epochs, first sat is E01.
-        assert_eq!(num_obs, 20, "at012000 should have 20 obs codes");
-        assert_eq!(total_epochs, 86_400);
+    fn fixture_at01_sate_e01() {
+        let (payload, num_obs, total_epochs) = first_sate("at01_v211_1hz.srnx");
+        // at01: 20 obs codes, 120 epochs, first sat is E01.
+        assert_eq!(num_obs, 20);
+        assert_eq!(total_epochs, 120);
 
         let sate = parse(&payload, num_obs, total_epochs).unwrap();
         assert_eq!(&sate.sat_name, b"E01");
@@ -266,10 +254,7 @@ mod tests {
         // E01 is Galileo: L2/P2/P1/S2/C2 (GPS-only codes) should be absent.
         assert_ne!(sate.socd_offsets[0], 0, "L1 should be observed");
         assert_eq!(sate.socd_offsets[1], 0, "L2 not expected for Galileo E01");
-        // Total present epochs should match the SOCD count decoded elsewhere.
-        assert_eq!(sate.present_epoch_indices.len(), 27047);
-        // Indices must be sorted and within bounds.
-        assert!(sate.present_epoch_indices.windows(2).all(|w| w[0] < w[1]));
-        assert!(*sate.present_epoch_indices.last().unwrap() < total_epochs);
+        // E01 is in every epoch of the excerpt.
+        assert_eq!(sate.present_epoch_indices, (0..120).collect::<Vec<_>>());
     }
 }

@@ -38,3 +38,21 @@ pub mod rinex_header;
 pub mod socd;
 #[doc(hidden)]
 pub mod srnx_reader;
+
+/// Read a fixture from `tests/data`, panicking if it is missing.
+#[cfg(test)]
+pub(crate) fn test_data(name: &str) -> Vec<u8> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data")
+        .join(name);
+    std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+/// The RINEX text of fixture `stem` in `tests/data`: `stem.rnx`, or for
+/// fixtures stored only in compact form, `stem.crx` decompressed.
+#[cfg(test)]
+pub(crate) fn test_rinex(stem: &str) -> Vec<u8> {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data");
+    std::fs::read(dir.join(format!("{stem}.rnx")))
+        .unwrap_or_else(|_| crinex::decompress(&test_data(&format!("{stem}.crx"))).unwrap())
+}

@@ -606,75 +606,68 @@ mod tests {
         );
     }
 
-    fn try_load_epoc(name: &str) -> Option<Vec<u8>> {
-        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("rnx-data")
-            .join(name);
-        let bytes = std::fs::read(path).ok()?;
-        let file = crate::file::SrnxFile::parse(&bytes).ok()?;
-        let sdir = file.sdir().ok().flatten()?;
-        let chunk = file.chunk_at_offset(sdir.epoc_offset)?;
-        Some(chunk.payload.to_vec())
+    fn fixture_epoch_chunk(name: &str) -> Vec<u8> {
+        let bytes = crate::test_data(name);
+        let file = crate::file::SrnxFile::parse(&bytes).unwrap();
+        let sdir = file.sdir().unwrap().unwrap();
+        file.chunk_at_offset(sdir.epoc_offset)
+            .unwrap()
+            .payload
+            .to_vec()
     }
 
     #[test]
-    fn fixture_at012000_epoc() {
-        let Some(payload) = try_load_epoc("at012000.srnx") else {
-            return;
-        };
-        let e = parse(&payload, EpochChunkKind::Epoc).unwrap();
-        assert_eq!(e.epochs.len(), 86_400, "at012000 should have 86400 epochs");
+    fn fixture_at01_epoc() {
+        let e = parse(
+            &fixture_epoch_chunk("at01_v211_1hz.srnx"),
+            EpochChunkKind::Epoc,
+        )
+        .unwrap();
+        assert_eq!(e.epochs.len(), 120);
         let first = &e.epochs[0];
         assert_eq!((first.year, first.month, first.day), (2020, 7, 18));
         assert_eq!((first.hour, first.minute, first.seconds_e7), (0, 0, 0));
         let last = e.epochs.last().unwrap();
-        // 86400 seconds = 24:00:00, but encoder splits at midnight, so the
-        // last epoch within this single span is 23:59:59 (1 s before next day).
         assert_eq!(
             (last.hour, last.minute, last.seconds_e7),
-            (23, 59, 59 * 10_000_000)
+            (0, 1, 59 * 10_000_000)
         );
         // RINEX 2: clock offsets all zero.
         assert!(e.epochs.iter().all(|ep| ep.clock_offset_e12 == 0));
     }
 
     #[test]
-    fn fixture_abmf_epoc() {
-        let Some(payload) = try_load_epoc("abmf.srnx") else {
-            return;
-        };
-        let e = parse(&payload, EpochChunkKind::Epoc).unwrap();
-        assert_eq!(
-            e.epochs.len(),
-            2880,
-            "abmf should have 2880 epochs (24h × 30s)"
-        );
+    fn fixture_mty2_epoc_skips_event() {
+        // 80 records at 15 s, one of which is a flag-4 event.
+        let e = parse(
+            &fixture_epoch_chunk("mty2_v211_15s.srnx"),
+            EpochChunkKind::Epoc,
+        )
+        .unwrap();
+        assert_eq!(e.epochs.len(), 79);
         let first = &e.epochs[0];
-        assert_eq!((first.year, first.month, first.day), (2020, 7, 7));
+        assert_eq!((first.hour, first.minute, first.seconds_e7), (0, 50, 0));
         let last = e.epochs.last().unwrap();
         assert_eq!(
             (last.hour, last.minute, last.seconds_e7),
-            (23, 59, 30 * 10_000_000)
+            (1, 9, 30 * 10_000_000)
         );
     }
 
     #[test]
-    fn fixture_okcb1200_epoc() {
-        let Some(payload) = try_load_epoc("okcb1200.srnx") else {
-            return;
-        };
-        let e = parse(&payload, EpochChunkKind::Epoc).unwrap();
-        assert_eq!(e.epochs.len(), 86_400);
-    }
-
-    #[test]
-    fn fixture_sbst1200_epoc() {
-        let Some(payload) = try_load_epoc("sbst1200.srnx") else {
-            return;
-        };
-        let e = parse(&payload, EpochChunkKind::Epoc).unwrap();
-        assert_eq!(e.epochs.len(), 86_400);
+    fn fixture_balm_epo2() {
+        let e = parse(
+            &fixture_epoch_chunk("balm_v402_1hz_ps.srnx"),
+            EpochChunkKind::Epo2,
+        )
+        .unwrap();
+        assert_eq!(e.epochs.len(), 120);
+        let first = &e.epochs[0];
+        assert_eq!((first.year, first.month, first.day), (2026, 10, 8));
+        assert_eq!((first.seconds_e7, first.extra_ps), (0, 37_123));
+        assert_eq!(
+            (e.epochs[1].seconds_e7, e.epochs[1].extra_ps),
+            (10_000_000, 74_246)
+        );
     }
 }
