@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use srnx::model::{Catalog, ObsCode, ObsFile, SatId, SatSystem};
+use srnx::model::{Catalog, HeaderText, ObsCode, ObsFile, SatId, SatSystem, Version};
 use srnx::reader::{self, Format};
 
 fn try_load(name: &str) -> Option<Vec<u8>> {
@@ -176,4 +176,37 @@ fn rinex_catalogs_agree_across_formats() {
             catalog.codes_by_system
         );
     }
+}
+
+#[test]
+fn version_is_the_rinex_version_in_every_format() {
+    let data = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data");
+    let fixtures = [
+        ("crinex_v211_features", 2, 11),
+        ("crinex_v304_features", 3, 4),
+        ("rinex402_picoseconds", 4, 2),
+    ];
+    for (stem, major, minor) in fixtures {
+        for ext in ["rnx", "crx"] {
+            let name = format!("{stem}.{ext}");
+            let bytes = std::fs::read(data.join(&name)).unwrap();
+            let file = reader::read(&bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(file.version(), Some(Version { major, minor }), "{name}");
+        }
+    }
+
+    for (name, major, minor) in [("ctbk1830.srnx", 2, 11), ("abmf.srnx", 3, 4)] {
+        if let Some(bytes) = try_load(name) {
+            let file = reader::read(&bytes).unwrap();
+            assert_eq!(file.version(), Some(Version { major, minor }), "{name}");
+        }
+    }
+
+    let unversioned = ObsFile {
+        header: HeaderText::from_text("END OF HEADER\n"),
+        epochs: Vec::new(),
+        events: Vec::new(),
+        observations: BTreeMap::new(),
+    };
+    assert_eq!(unversioned.version(), None);
 }

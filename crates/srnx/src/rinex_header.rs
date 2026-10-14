@@ -157,6 +157,9 @@ pub enum HeaderError {
     OrphanObsContinuation,
 }
 
+/// A RINEX format version.  `minor` is the number formed by the two digits
+/// after the point, so version 2.11 is `{ major: 2, minor: 11 }` and 3.04 is
+/// `{ major: 3, minor: 4 }`.  Versions order numerically.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub struct Version {
     pub major: u8,

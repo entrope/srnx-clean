@@ -16,6 +16,7 @@ It presents a unified API for reading those formats, so that most code
 can be agnostic of whether the input file is RINEX, CRINEX or SRNX.
 Observation codes differ for RINEX v2/CRINEX 1 compared to the v3/v4
 variants; this library does not normalize them.
+Use `ObsFile::version()` to check which set of observation codes to use.
 This library supports picosecond-resolution epoch timestamps (an optional
 feature since RINEX v4.02, CRINEX 3.1 and SRNX 1.2).
 

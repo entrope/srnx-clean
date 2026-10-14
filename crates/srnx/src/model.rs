@@ -6,8 +6,8 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use crate::rinex_header::Header;
-pub use crate::rinex_header::{HeaderText, ObsCode, SatSystem};
+use crate::rinex_header::{self, Header};
+pub use crate::rinex_header::{HeaderText, ObsCode, SatSystem, Version};
 
 /// Satellite identifier: system code byte (`b'G'`, `b'R'`, `b'E'`, …) + PRN.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -102,6 +102,23 @@ pub struct ObsFile {
     /// order.  Epochs where the observation is absent are simply omitted.
     /// Use binary search on the first element for O(log n) lookup by epoch.
     pub observations: BTreeMap<(SatId, ObsCode), Vec<(usize, Obs)>>,
+}
+
+impl ObsFile {
+    /// The RINEX version from the header's `RINEX VERSION / TYPE` record.
+    ///
+    /// This is the version of the RINEX data, whatever the file format: a
+    /// Compact RINEX 1.0 file holds RINEX 2 data, and an SRNX file holds
+    /// the header of the RINEX file it was made from.  It tells which
+    /// observation codes to expect: two characters (`L1`) for RINEX 2, three
+    /// (`L1C`) for RINEX 3 and 4.
+    ///
+    /// The readers reject files without a version 2, 3 or 4 record, so
+    /// this is `None` only for an `ObsFile` built with such a header.
+    #[must_use]
+    pub fn version(&self) -> Option<Version> {
+        rinex_header::sniff_version(self.header.as_bytes())
+    }
 }
 
 /// The satellites and signals an observation file may contain, as known
